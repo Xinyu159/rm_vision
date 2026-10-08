@@ -46,6 +46,23 @@
 2. **big/small type**：0526 不直接输出，需按关键点几何（`ratio = 长/宽`）或编号自行判定；同济 v5 构造里 `num_id==1 → big` 的写法与 0526 编号体系不符，**不要照搬**
 3. **FP16 输入**：喂 ONNX 需要 float16（onnxruntime 手动 cast；TensorRT / OpenVINO 会自动处理）
 
-## 4. 后续
+## 4. 推理后端实测：TensorRT FP16（Xavier NX 8GB，2026-10-08）
+
+构建命令（trtexec 为 JetPack 自带）：
+
+    trtexec --onnx=models/0526.onnx --fp16 --workspace=1024             --timingCacheFile=models/0526.timingcache             --saveEngine=models/0526_fp16.engine
+
+| 指标 | 实测值 |
+|---|---|
+| GPU 计算时间 | **10.41 ms**（p99 10.44；min-max 抖动仅 0.08 ms） |
+| 端到端延迟（含 H2D/D2H） | 10.82 ms |
+| 吞吐 | **95.8 FPS** |
+| H2D / D2H 拷贝 | 0.20 / 0.21 ms（可忽略） |
+| 引擎文件 | 5.6 MB，`models/0526_fp16.engine`（gitignore，设备+TRT 版本绑定） |
+| 一次性构建耗时 | ~14.5 分钟（8GB 内存偏紧，构建前先腾内存） |
+
+结论：置信度/抖动都很稳，**主链路用 TensorRT FP16 直连**——onnxruntime 在 Jetson 上无优势（CUDA EP 更慢；TRT EP 只是包装层且 aarch64 wheel 难装）。
+
+## 5. 后续
 
 下一步：步兵（3V3）单兵种架构设计——io 层接大恒相机（Galaxy SDK）、detector 层按本映射实现、推理后端选型（TensorRT vs onnxruntime-gpu）。
