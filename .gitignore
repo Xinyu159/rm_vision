@@ -1,16 +1,70 @@
-# 参考代码（各自是独立 git 仓库，不重复纳入）
+# ==================== 参考代码 ====================
+# 同济 / 深大参考仓库各自独立版本管理，不纳入本仓库（见 README 记录的参考 commit）
 reference/
 
-# 构建产物
+# ==================== 构建产物（C++ / CMake） ====================
 build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
 *.o
 *.so
 *.a
+*.out
+bin/
+lib/
 
-# Python
+# ==================== 推理引擎产物（部署机上生成的大文件） ====================
+*.engine
+*.plan
+*.trt
+# 注：模型本体（models/*.onnx 等）要入库，与代码版本对齐
+
+# ==================== 运行 / 调试产物 ====================
+logs/
+log/
+records/
+records_*/
+imgs/
+captures/
+testvideos/
+*.avi
+*.mp4
+*.mkv
+*.bag
+*.log
+
+# ==================== 相机 SDK / 日志 ====================
+# 如需把厂商 SDK 随项目放置（同济惯例放 Camera/），或运行时产生的 SDK 日志
+Camera/
+MvSdkLog/
+Galaxy_camera.run
+Galaxy_Linux*
+
+# ==================== Python ====================
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
 
-# 编辑器
-.vscode/
+# ==================== 编辑器 / IDE ====================
+# 忽略 .vscode 但保留四个常用配置（团队/多机协作时有用）
+.vscode/*
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
+*.swp
+*~
+.cache/
+
+# ==================== 系统杂项 ====================
+.DS_Store
+Thumbs.db
+.directory
