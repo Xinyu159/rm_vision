@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "cli_common.hpp"
 #include "io/galaxy/galaxy.hpp"
 #include "tools/exiter.hpp"
 #include "tools/logger.hpp"
@@ -35,6 +36,7 @@ const cv::String keys =
   "{fps f         | -1   | 目标帧率 Hz（>0 才生效）}"
   "{roi           |      | ROI 尺寸 WxH，如 1024x768（不改则不填）}"
   "{decimation d  | 0    | 抽行抽列 1~2（>0 才生效）}"
+  "{wb w          |      | 白平衡 Off/Once/Continuous（空 = 按 yaml）}"
   "{seconds s     | 3    | 测量时长（秒）}"
   "{save          |      | 预热后存一帧到该路径（Bayer→BGR 的 png）}"
   "{save-raw      |      | 存原始 Bayer 帧（8bit 灰度 png，判阵列用）}"
@@ -49,34 +51,9 @@ int main(int argc, char ** argv)
   }
 
   const std::string config_path = cli.get<cv::String>("@config-path");
-  if (config_path.find('/') == std::string::npos && config_path.find(".yaml") == std::string::npos) {
-    tools::logger()->error(
-      "[camera_test] 位置参数 \"{}\" 不像配置文件路径。注意：本程序参数必须用 = 传值（如 "
-      "--exposure=4000），写 \"--exposure 4000\" 会把 4000 当成配置文件",
-      config_path);
-    return 1;
-  }
+  if (!cli_tools::config_path_ok("camera_test", config_path)) return 1;
   auto config = io::galaxy_config_from_yaml(config_path);
-
-  // 命令行覆盖 yaml
-  double exposure = cli.get<double>("exposure");
-  if (exposure > 0) config.exposure_us = exposure;
-  double gain = cli.get<double>("gain");
-  if (gain >= 0) config.gain_db = gain;
-  double fps_target = cli.get<double>("fps");
-  if (fps_target > 0) config.framerate = fps_target;
-  int decimation = cli.get<int>("decimation");
-  if (decimation > 0) config.decimation = decimation;
-  cv::String roi = cli.get<cv::String>("roi");
-  if (!roi.empty()) {
-    int w = 0, h = 0;
-    if (std::sscanf(roi.c_str(), "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
-      tools::logger()->error("[camera_test] roi 格式应为 WxH，如 1024x768");
-      return 1;
-    }
-    config.roi_width = w;
-    config.roi_height = h;
-  }
+  if (!cli_tools::apply_camera_overrides(cli, config, "camera_test")) return 1;
   double seconds = cli.get<double>("seconds");
 
   tools::Exiter exiter;

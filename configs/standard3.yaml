@@ -15,6 +15,8 @@ galaxy:
   gain_db: 0                # 0~16
   framerate: 210            # 设定值；实际取 min(设定, 1/曝光, 带宽/帧大小)
   pixel_format: "BayerRG8"  # 满帧率必须 8bit（BayerRG10 按 2B/px 算会超 400MB/s）
+  balance_white_auto: "Once"  # Off/Once/Continuous；单位增益画面偏青，开流后自动做一次白平衡
+                              # （窗口预览里按 w 可随时重做；做颜色识别链路时再定固定 R/B 增益）
 
 #####-----标定（2026-08-15 标定，台账见 calibration/）-----#####
 camera_matrix: [1292.4613, 0, 651.550, 0, 1292.1487, 485.413, 0, 0, 1]

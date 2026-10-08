@@ -81,7 +81,7 @@
   - **用内参注意**：主点不在画面中心（比中心偏 **+12.1 / −26.1 px**），PnP 不能假设居中；**开 ROI 的换算规则**：只裁切不缩放 → cx/cy 平移、fx/fy 不变；缩放（降采样）→ 四参数等比；动对焦/光圈/镜头 → 必须重标
 - 全局快门（131 同款 PYTHON1300）→ 高速旋转无果冻效应（RM 场景加分）
 - 取帧策略（设计决定）：**永远取最新帧**，处理追不上就丢旧帧，不排队堆积
-- 白平衡当前 Off（BalanceRatio=1.0；标定时是 1.582）—— RM 要分红蓝，WB 策略（固定值 vs Auto Once）做颜色链路时定
+- 白平衡：yaml 现为 `balance_white_auto: "Once"`（开流后按当前场景算一次；触发时机的坑见 §7）。单位增益（Off + BalanceRatio=1.0）下画面偏青绿——RM 要分红蓝，固定增益方案做颜色链路时定
 
 ### 6. 工程与开发流程
 
@@ -92,6 +92,7 @@
 - 网络：校园网直连常不通，**别用 ping 判断**（封 ICMP），用 `curl -I`；代理在笔记本 `127.0.0.1:17897`（http/socks5 同端口）
 - 相机参数一键复读：`PYTHONPATH=~/sdk/galaxy/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/Galaxy_Linux_Python_2.4.2503.9202/api python3 tools/gx_dump.py`（只读遍历全部特征）
 - **工程骨架（2026-10-08 落地，编译+跑流均通过）**：`tools/`（logger/exiter/math_tools/thread_safe_queue/yaml）、`io/`（`camera.hpp` 抽象 + `galaxy/` 大恒驱动；线程模型对齐同济：捕获线程 + 守护线程 100ms 重连 + 容量 1"丢旧留新"队列）、`configs/standard3.yaml`（相机参数按实测写全）、`tests/camera_test`（取流/帧率实测）。构建：`mkdir -p build && cd build && cmake .. && make -j4`
+- **实时预览 `tests/camera_view`（2026-10-08）**：两种模式——窗口（Jetson 接显示器时 `DISPLAY=:1` 直接开）/ `--serve=8080` 内置 MJPEG 服务，**日常用浏览器看**（http://10.42.0.80:8080/；画面里烘焙了 fps/延迟/曝光，约 30fps 推流，`--scale` 控制清晰度与带宽）。**叠加文字只能用 ASCII**（Hershey 字体中文=「??」）。两个测试程序的命令行覆盖逻辑已抽到 `tests/cli_common.hpp` 共用
 - 踩坑：`cv::CommandLineParser` 的参数**必须用 `=` 传值**（`--exposure=4000`）；写 `--exposure 4000` 会把 4000 当成位置参数（配置路径），camera_test 里已加防呆提示
 - 运维坑（已踩）：`pkill -f` 会匹配到自己 ssh 脚本正文导致自杀 → 用 `pkill -x` 或字符串拼接；TRT 建引擎必须限 `--workspace` + 先腾内存
 
@@ -104,6 +105,7 @@
 - ❌ "MER-139 和 MER-131 是两个不同画幅的型号" → 同一档 1280×1024@210fps：手册叫 131-210U3C、相机固件自报 139-210U3C
 - ❌ "帧率设了 210 就是 210" → 帧率被 1/曝光 卡：实测 ExposureTime=10ms 时只有 99.4fps（改曝光 ≤4.7ms 才能到 210）
 - ❌ "OpenCV 的 `COLOR_BayerRG2BGR` 对应 RGGB 传感器" → **反直觉：OpenCV 的 Bayer 命名看的是第二行第二列**，RGGB 传感器正确常量是 `COLOR_BayerBG2BGR`（红屏实测：RG 变体红蓝互换；相机自报的 "BayerRG8" 是厂商惯例命名，与 OpenCV 常量名不同源）
+- ❌ "白平衡算一次就一劳永逸" → 相机设置跨会话保留，且 WB Once **定格在触发那一瞬的画面**：开机时镜头前有红物体 → 算出的 B 增益 1.86 会一直带下去，把之后的正常画面推成蓝调（实测踩过）。修正：预览窗口按 `w` 重做，或 `--wb=Off` 沿用现值；做颜色链路时改为按现场光定的固定 R/B 增益
 
 ---
 

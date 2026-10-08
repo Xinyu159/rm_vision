@@ -22,7 +22,7 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 - `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml）+ 工具脚本
 - `configs/` — 机器人配置（`standard3.yaml`：相机参数按实测写全 + 标定内参）
 - `src/` — 主程序（`standard.cpp` 空壳，随阶段推进长出检测/跟踪/决策）
-- `tests/` — 模块测试（`camera_test` 取流/帧率实测工具）
+- `tests/` — 模块测试（`camera_test` 取流/帧率实测；`camera_view` 实时预览：窗口或浏览器看）+ `cli_common.hpp` 公共命令行件
 - `calibration/` — 相机标定参数（内参 yaml + 标定记录表）
 - `reference/` — 参考仓库（各自独立 git，本仓库不追踪，详见下节）
 
@@ -30,14 +30,18 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 
 ```bash
 mkdir -p build && cd build && cmake .. && make -j4
-./build/standard                                  # 主程序空壳（取流 + 帧率打印）
-./build/camera_test --seconds=3                   # 相机取流/帧率实测
+./build/standard                                          # 主程序空壳（取流 + 帧率打印）
+./build/camera_test --seconds=3                           # 相机取流/帧率实测
 ./build/camera_test --exposure=4000 --roi=640x512 --decimation=2 --save=frame.png
+./build/camera_view --serve=8080 --scale=0.75             # 实时预览（日常）：浏览器开 http://10.42.0.80:8080/
+./build/camera_view                                       # 或在 Jetson 本机显示器开窗口（需 DISPLAY；无显示器用 --serve）
 ```
 
 - 依赖：OpenCV 4.5.4 / Eigen3 / yaml-cpp / spdlog / fmt + 大恒 Galaxy ARM64 SDK（头文件路径见顶层 `CMakeLists.txt` 的 `GALAXY_INC`）
 - 注意：OpenCV 参数解析器**必须用 `=` 传值**（`--exposure=4000`）；写空格分隔会把数值当成配置文件路径
 - 相机设置会跨开关机保留，所以 `configs/standard3.yaml` 里几何参数（ROI/抽行）写全，保证每次启动形态确定
+- **预览叠加文字只能 ASCII**：`cv::putText` 的 Hershey 字体渲染不了中文（会显示成"??"），改叠加内容时注意
+- 白平衡（`balance_white_auto`）：默认 `Once` = 开流后按**当时画面**算一次；若这一刻镜头前恰好是红/蓝色物体，补偿会被带下去（实测踩过：正常画面变蓝调）→ 窗口模式按 `w` 重做，或加 `--wb=Off` 沿用当前增益不再重算
 
 ## 文档
 

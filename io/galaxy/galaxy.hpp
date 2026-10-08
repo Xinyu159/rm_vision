@@ -27,6 +27,9 @@ struct GalaxyConfig
   std::string pixel_format;                                      // 如 "BayerRG8"
   int roi_width = -1, roi_height = -1, roi_x = -1, roi_y = -1;   // ROI（-1 = 不改）
   int decimation = -1;                                           // 抽行/抽列 1~2（-1 = 不改）
+  // 白平衡："Off" / "Once" / "Continuous"（空 = 不改本项）。
+  // 默认 Off：单位增益画面偏青（实测）。"Once" 需在开流后触发，open() 里自动补一次
+  std::string balance_white_auto = "Off";
 };
 
 /// 从 yaml 的 galaxy: 块读参数
@@ -49,6 +52,9 @@ public:
 
   /// 相机自报的实际帧率（需在取流过程中调用）
   double actual_framerate() const;
+
+  /// 触发一次白平衡（需在取流中调用；用当前画面算 R/G/B 增益并读回日志）
+  void white_balance_once();
 
 private:
   struct CameraData

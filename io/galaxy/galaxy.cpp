@@ -107,6 +107,7 @@ GalaxyConfig galaxy_config_from_yaml(const std::string & config_path)
   config.roi_x = tools::read_or<int>(g, "roi_x", -1);
   config.roi_y = tools::read_or<int>(g, "roi_y", -1);
   config.decimation = tools::read_or<int>(g, "decimation", -1);
+  config.balance_white_auto = tools::read_or<std::string>(g, "balance_white_auto", "Off");
   return config;
 }
 
@@ -142,6 +143,21 @@ double Galaxy::actual_framerate() const
 {
   if (handle_ == nullptr) return 0;
   return get_float((GXH)handle_, "CurrentAcquisitionFrameRate", 0);
+}
+
+void Galaxy::white_balance_once()
+{
+  auto h = (GXH)handle_;
+  if (h == nullptr) return;
+  if (!set_enum(h, "BalanceWhiteAuto", "Once")) return;
+
+  std::this_thread::sleep_for(300ms);  // 相机用后续几帧计算，等等再读回
+
+  double r = 0, g = 0, b = 0;
+  if (set_enum(h, "BalanceRatioSelector", "Red")) r = get_float(h, "BalanceRatio", 0);
+  if (set_enum(h, "BalanceRatioSelector", "Green")) g = get_float(h, "BalanceRatio", 0);
+  if (set_enum(h, "BalanceRatioSelector", "Blue")) b = get_float(h, "BalanceRatio", 0);
+  tools::logger()->info("[Galaxy] 白平衡 Once: R={:.3f} G={:.3f} B={:.3f}", r, g, b);
 }
 
 void Galaxy::try_open()
@@ -192,6 +208,12 @@ void Galaxy::open()
   capture_thread_ = std::thread(&Galaxy::capture_loop, this);
   ok_ = true;
   tools::logger()->info("[Galaxy] 取流已启动");
+
+  // 开流后补一次白平衡（相机需要画面才能算增益）
+  if (config_.balance_white_auto == "Once") {
+    std::this_thread::sleep_for(300ms);  // 等几帧
+    white_balance_once();
+  }
 }
 
 void Galaxy::apply_config()
@@ -200,7 +222,9 @@ void Galaxy::apply_config()
 
   set_enum(h, "AcquisitionMode", "Continuous");
   set_enum(h, "TriggerMode", "Off");
-  set_enum(h, "BalanceWhiteAuto", "Off");
+  // 白平衡：Once 要等开流有画面才能算，这里只设非 Once 的值（Once 在 open() 开流后补）
+  if (!config_.balance_white_auto.empty() && config_.balance_white_auto != "Once")
+    set_enum(h, "BalanceWhiteAuto", config_.balance_white_auto.c_str());
 
   if (!config_.pixel_format.empty()) set_enum(h, "PixelFormat", config_.pixel_format.c_str());
 

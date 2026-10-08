@@ -36,6 +36,7 @@ testvideos/
 *.mkv
 *.bag
 *.log
+snapshot_*.jpg          # camera_view 窗口模式按 s 的存图，落在运行目录
 
 # ==================== 相机 SDK / 日志 ====================
 # 如需把厂商 SDK 随项目放置（同济惯例放 Camera/），或运行时产生的 SDK 日志

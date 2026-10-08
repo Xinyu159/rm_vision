@@ -35,3 +35,6 @@ target_link_libraries(standard ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 #################### tests ####################
 add_executable(camera_test tests/camera_test.cpp)
 target_link_libraries(camera_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
+
+add_executable(camera_view tests/camera_view.cpp)
+target_link_libraries(camera_view ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
