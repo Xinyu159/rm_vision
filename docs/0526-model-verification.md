@@ -50,18 +50,20 @@
 
 构建命令（trtexec 为 JetPack 自带）：
 
-    trtexec --onnx=models/0526.onnx --fp16 --workspace=1024             --timingCacheFile=models/0526.timingcache             --saveEngine=models/0526_fp16.engine
+    trtexec --onnx=models/0526.onnx --fp16 --workspace=1024 \
+            --timingCacheFile=models/0526.timingcache \
+            --saveEngine=models/0526_fp16.engine
 
-| 指标 | 实测值 |
-|---|---|
-| GPU 计算时间 | **10.41 ms**（p99 10.44；min-max 抖动仅 0.08 ms） |
-| 端到端延迟（含 H2D/D2H） | 10.82 ms |
-| 吞吐 | **95.8 FPS** |
-| H2D / D2H 拷贝 | 0.20 / 0.21 ms（可忽略） |
-| 引擎文件 | 5.6 MB，`models/0526_fp16.engine`（gitignore，设备+TRT 版本绑定） |
-| 一次性构建耗时 | ~14.5 分钟（8GB 内存偏紧，构建前先腾内存） |
+| 指标 | 10W DESKTOP（板子出厂默认） | **15W 6核 + jetson_clocks（推荐部署态）** |
+|---|---|---|
+| GPU 计算 | 10.41 ms | **6.08 ms** |
+| 吞吐 | 95.8 FPS | **164.1 FPS** |
+| 单次抖动 (max-min) | 0.08 ms | 0.17 ms |
+| GPU 时钟上限 | 510 MHz | 锁 1109 MHz |
 
-结论：置信度/抖动都很稳，**主链路用 TensorRT FP16 直连**——onnxruntime 在 Jetson 上无优势（CUDA EP 更慢；TRT EP 只是包装层且 aarch64 wheel 难装）。
+- **部署必须切模式锁频**：`sudo nvpmodel -m 2`（15W 6核，含 6 核 CPU）+ `sudo jetson_clocks`；否则 GPU 被限 510MHz，性能腰斩。nvpmodel 模式重启保持，jetson_clocks 重启失效需重跑（或写进启动服务）。
+- 引擎文件 5.6 MB（`models/0526_fp16.engine`，gitignore，设备 + TRT 版本绑定）；一次性构建 ~14.5 分钟（构建前建议腾内存）；反序列化冷启动 ~2.2 s
+- 结论：onnxruntime 在 Jetson 上无优势（TRT EP 只是包装层且同样要建引擎；CUDA EP 更慢；aarch64 wheel 难装）→ **主链路 TensorRT FP16 直连**
 
 ## 5. 后续
 
