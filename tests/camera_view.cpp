@@ -23,6 +23,7 @@
 #include <cstring>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -135,6 +136,13 @@ void serve_mjpeg(int port, Streamer & s, std::atomic<bool> & quit)
   }
 
   while (!quit) {
+    // accept 用 500ms 超时轮询 quit——裸 accept() 会永久阻塞，Ctrl+C/信号退出时
+    // join 卡死、进程杀不干净、相机被占住（实测踩过），务必保留这个超时
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(lfd, &rfds);
+    timeval tv{0, 500 * 1000};
+    if (::select(lfd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
     int cfd = ::accept(lfd, nullptr, nullptr);
     if (cfd < 0) {
       if (quit) break;
