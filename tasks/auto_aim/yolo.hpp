@@ -1,0 +1,64 @@
+#ifndef AUTO_AIM__YOLO_HPP
+#define AUTO_AIM__YOLO_HPP
+
+// YOLO 检测（TensorRT 后端，0526 模型）
+//
+// 对照同济 tasks/auto_aim/yolo.hpp + yolos/yolov5.cpp：
+//   - 预处理 / 输出解析逐行对齐（映射表见 docs/0526-model-verification.md §3）
+//   - 后端由 OpenVINO IR 换为 TensorRT FP16（engine 由 trtexec 构建，见该文档 §4）
+//   - 未含 ROI 裁剪与 use_traditional 传统法二次矫正（到相应阶段再补）
+//
+// 已知 engine 绑定（models/0526_fp16.engine）：images fp16 [1,3,640,640] → output fp32 [1,25200,22]
+
+#include <list>
+#include <memory>
+#include <string>
+
+#include "auto_aim/armor.hpp"
+
+namespace auto_aim
+{
+
+struct YoloConfig
+{
+  std::string engine_path = "models/0526_fp16.engine";  // 相对仓库根（与 yaml 同约定）
+  double min_confidence = 0.50;      // objectness 阈值（实测验证值；同济常量 0.7 会漏检）
+  double nms_threshold = 0.45;       // 同济用 0.3
+  double big_ratio_threshold = 1.4;  // 长/宽比 ≥ 此值判大装甲（Bs/Bb 由编号直接给出）
+};
+
+YoloConfig yolo_config_from_yaml(const std::string & config_path);
+
+class YOLO
+{
+public:
+  /// 载入 engine（反序列化 + 分配显存）。失败抛 std::runtime_error，信息里带原因。
+  explicit YOLO(const YoloConfig & config);
+  ~YOLO();
+
+  /// img 可传单通道 Bayer（相机原始帧，内部走 COLOR_BayerBG2BGR）或三通道 BGR；
+  /// 返回装甲板列表（已做置信度过滤 + NMS）。非线程安全（内部复用缓存）。
+  std::list<Armor> detect(const cv::Mat & img);
+
+  /// 最近一次 detect 的耗时分解（毫秒）
+  struct Timings
+  {
+    double preprocess = 0;
+    double inference = 0;
+    double postprocess = 0;
+    double total() const { return preprocess + inference + postprocess; }
+  };
+  Timings last_timings() const { return timings_; }
+  double last_scale() const { return scale_; }  // 最近一次的 letterbox 缩放比（调试用）
+
+private:
+  YoloConfig config_;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+  Timings timings_;
+  double scale_ = 1.0;
+};
+
+}  // namespace auto_aim
+
+#endif  // AUTO_AIM__YOLO_HPP

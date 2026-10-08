@@ -2,10 +2,11 @@
 //
 // 两种模式：
 //   窗口模式（默认）  ：在带显示器的机器上直接开窗口（Jetson 本机：DISPLAY=:1）
-//   网络模式（--serve）：内置 MJPEG HTTP 服务，浏览器打开 http://<Jetson IP>:<端口>/ 即可看
-//                        （无显示器 / SSH 场景用；画面里的帧率数字是烘焙进图像的）
+//   网络模式（--serve）：内置 MJPEG HTTP 服务（tools/mjpeg_server.hpp），浏览器打开
+//                        http://<Jetson IP>:<端口>/ 即可看（无显示器 / SSH 场景用）
 //
-// 注意：OpenCV 参数解析器必须用 "=" 传值（--exposure=4000），空格分隔会把数值当成配置文件路径
+// 注意：叠加文字只能用 ASCII——cv::putText 的 Hershey 字体不支持中文，中文会渲染成"??"
+// 注意：参数必须用 "=" 传值（--exposure=4000），空格分隔会把数值当成配置文件路径
 // 用法：
 //   ./camera_view                          # 默认参数开窗口
 //   ./camera_view --exposure=4000          # 曝光 4ms
@@ -13,26 +14,13 @@
 //   ./camera_view --wb=Once                # 进画面后做一次白平衡（默认按 yaml）
 //   ./camera_view --serve=8080             # 不开窗口，浏览器看流
 // 快捷键（窗口模式）：q / ESC 退出；s 存干净图；w 重做一次白平衡
-//
-// 注意：叠加文字只能用 ASCII——cv::putText 的 Hershey 字体不支持中文，中文会渲染成"??"
-// 注意：参数必须用 "=" 传值（--exposure=4000），空格分隔会把数值当成配置文件路径
 
-#include <arpa/inet.h>
 #include <csignal>
-#include <cstdio>
-#include <cstring>
-#include <ifaddrs.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <mutex>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <thread>
@@ -43,8 +31,7 @@
 #include "tools/exiter.hpp"
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
-
-using namespace std::chrono_literals;
+#include "tools/mjpeg_server.hpp"
 
 const cv::String keys =
   "{help h usage ? |      | 打印帮助 }"
@@ -60,121 +47,6 @@ const cv::String keys =
 
 namespace
 {
-
-/// 供 MJPEG 客户端取"最新一帧 JPEG"的共享槽
-struct Streamer
-{
-  std::mutex m;
-  std::condition_variable cv;
-  std::vector<uchar> jpeg;
-  uint64_t seq = 0;
-
-  void publish(std::vector<uchar> && j)
-  {
-    {
-      std::lock_guard<std::mutex> lock(m);
-      jpeg = std::move(j);
-      seq++;
-    }
-    cv.notify_all();
-  }
-
-  bool latest(std::vector<uchar> & out, uint64_t & last, int timeout_ms)
-  {
-    std::unique_lock<std::mutex> lock(m);
-    cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return seq != last; });
-    if (seq == last) return false;
-    out = jpeg;
-    last = seq;
-    return true;
-  }
-};
-
-bool write_all(int fd, const void * data, size_t n)
-{
-  const char * p = (const char *)data;
-  while (n > 0) {
-    ssize_t w = ::write(fd, p, n);
-    if (w <= 0) return false;
-    p += w;
-    n -= (size_t)w;
-  }
-  return true;
-}
-
-void serve_mjpeg(int port, Streamer & s, std::atomic<bool> & quit)
-{
-  int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (lfd < 0) {
-    tools::logger()->error("[camera_view] 建 socket 失败");
-    return;
-  }
-  int one = 1;
-  ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port = htons((uint16_t)port);
-  if (::bind(lfd, (sockaddr *)&addr, sizeof addr) != 0 || ::listen(lfd, 2) != 0) {
-    tools::logger()->error("[camera_view] 绑定端口 {} 失败（被占用？）", port);
-    ::close(lfd);
-    return;
-  }
-
-  ifaddrs * ifa = nullptr;
-  if (::getifaddrs(&ifa) == 0) {
-    for (auto * p = ifa; p != nullptr; p = p->ifa_next) {
-      if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
-      char buf[INET_ADDRSTRLEN] = {0};
-      auto * sin = (sockaddr_in *)p->ifa_addr;
-      ::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof buf);
-      if (std::strcmp(buf, "127.0.0.1") != 0)
-        tools::logger()->info("[camera_view] 浏览器打开: http://{}:{}/  （网卡 {}）", buf, port, p->ifa_name);
-    }
-    ::freeifaddrs(ifa);
-  }
-
-  while (!quit) {
-    // accept 用 500ms 超时轮询 quit——裸 accept() 会永久阻塞，Ctrl+C/信号退出时
-    // join 卡死、进程杀不干净、相机被占住（实测踩过），务必保留这个超时
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(lfd, &rfds);
-    timeval tv{0, 500 * 1000};
-    if (::select(lfd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
-    int cfd = ::accept(lfd, nullptr, nullptr);
-    if (cfd < 0) {
-      if (quit) break;
-      continue;
-    }
-    tools::logger()->info("[camera_view] 浏览器已接入");
-    const char * hdr =
-      "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-      "Cache-Control: no-store\r\n\r\n";
-    if (!write_all(cfd, hdr, std::strlen(hdr))) {
-      ::close(cfd);
-      continue;
-    }
-
-    std::vector<uchar> frame;
-    uint64_t last = 0;
-    while (!quit) {
-      if (!s.latest(frame, last, 200)) continue;
-      char head[160];
-      int n = std::snprintf(
-        head, sizeof head, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n",
-        (size_t)frame.size());
-      if (!write_all(cfd, head, (size_t)n) || !write_all(cfd, frame.data(), frame.size()) ||
-          !write_all(cfd, "\r\n", 2))
-        break;
-      std::this_thread::sleep_for(33ms);  // 推给浏览器约 30fps，别把带宽/CPU 打满
-    }
-    ::close(cfd);
-    tools::logger()->info("[camera_view] 浏览器断开");
-  }
-  ::close(lfd);
-}
 
 void draw_overlay(
   cv::Mat & img, double fps, double fps_avg, double cam_hz, double lat_ms, uint64_t n, int raw_w,
@@ -203,16 +75,6 @@ void draw_overlay(
   cv::putText(img, bottom, {12, 110}, cv::FONT_HERSHEY_SIMPLEX, 0.7, yellow, 2);
 }
 
-void snapshot(const cv::Mat & bgr)
-{
-  auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-  std::tm tm{};
-  localtime_r(&t, &tm);
-  char name[64] = {0};
-  std::strftime(name, sizeof name, "snapshot_%Y%m%d_%H%M%S.jpg", &tm);
-  cv::imwrite(name, bgr);
-  tools::logger()->info("[camera_view] 已存图: {}（干净图，无叠加）", name);
-}
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -247,11 +109,11 @@ int main(int argc, char ** argv)
   }
 
   const std::string title = "rm_vision camera view";
-  Streamer streamer;
+  tools::MjpegStreamer streamer;
   std::atomic<bool> quit{false};
   std::thread server;
   if (serve_mode) {
-    server = std::thread(serve_mjpeg, port, std::ref(streamer), std::ref(quit));
+    server = std::thread(tools::serve_mjpeg, port, std::ref(streamer), std::ref(quit), "camera_view");
     tools::logger()->info("[camera_view] MJPEG 模式（端口 {}），Ctrl+C 退出", port);
   } else {
     tools::logger()->info("[camera_view] 窗口模式；无显示环境时请改用 --serve=8080");
@@ -292,9 +154,7 @@ int main(int argc, char ** argv)
       draw_overlay(disp, fps, fps_avg, cam_hz, lat_ms, n, raw.cols, raw.rows, config);
 
       if (serve_mode) {
-        std::vector<uchar> jpeg;
-        cv::imencode(".jpg", disp, jpeg, {cv::IMWRITE_JPEG_QUALITY, 80});
-        streamer.publish(std::move(jpeg));
+        streamer.publish(disp);  // JPEG 编码在服务线程做（见 tools/mjpeg_server.hpp 注释）
         t_last_enc = now;
       } else {
         try {
@@ -304,7 +164,7 @@ int main(int argc, char ** argv)
             tools::logger()->info("[camera_view] 按键退出");
             break;
           }
-          if (k == 's') snapshot(bgr);
+          if (k == 's') cli_tools::snapshot(bgr, "camera_view");
           if (k == 'w') camera.white_balance_once();
           // 窗口可见性：GTK 下新窗口映射有延迟，首帧可能短暂不可见 → 只有"曾经可见过"才算被点 X 关掉
           if (cv::getWindowProperty(title, cv::WND_PROP_VISIBLE) >= 1) {

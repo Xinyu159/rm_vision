@@ -27,6 +27,7 @@ include_directories(${GALAXY_INC})
 
 add_subdirectory(tools)
 add_subdirectory(io)
+add_subdirectory(tasks)
 
 #################### src ####################
 add_executable(standard src/standard.cpp)
@@ -38,3 +39,9 @@ target_link_libraries(camera_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 
 add_executable(camera_view tests/camera_view.cpp)
 target_link_libraries(camera_view ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
+
+add_executable(detect_view tests/detect_view.cpp)
+target_link_libraries(detect_view ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
+
+add_executable(yolo_test tests/yolo_test.cpp)
+target_link_libraries(yolo_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools auto_aim)

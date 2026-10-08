@@ -1,8 +1,10 @@
-// camera_test / camera_view 共用的命令行处理（两处维护同一套覆盖逻辑容易漏改，抽出来）
+// 预览/测试工具共用的命令行处理与杂项（多处维护同一套逻辑容易漏改，抽出来）
+// 使用方：camera_test / camera_view / detect_view
 #ifndef TESTS__CLI_COMMON_HPP
 #define TESTS__CLI_COMMON_HPP
 
 #include <cstdio>
+#include <ctime>
 #include <opencv2/opencv.hpp>
 #include <string>
 
@@ -58,6 +60,18 @@ inline bool apply_camera_overrides(
   if (!wb.empty()) config.balance_white_auto = wb;
 
   return true;
+}
+
+/// 存一张干净图（无叠加），文件名带时间戳，落在当前目录
+inline void snapshot(const cv::Mat & img, const std::string & tag)
+{
+  auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  char name[64] = {0};
+  std::strftime(name, sizeof name, "snapshot_%Y%m%d_%H%M%S.jpg", &tm);
+  cv::imwrite(name, img);
+  tools::logger()->info("[{}] 已存图: {}（干净图，无叠加）", tag, name);
 }
 }  // namespace cli_tools
 
