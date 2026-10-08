@@ -18,9 +18,26 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 
 - `models/` — 检测模型本体入库，与代码版本对齐（`0526.onnx`，4.2MB）
 - `docs/` — 分析与验证文档
-- `tools/` — 工具脚本
+- `io/` — 硬件 IO 层：`camera.hpp` 相机抽象 + `galaxy/` 大恒驱动（捕获线程 + 守护重连线程，容量 1 丢旧留新队列）
+- `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml）+ 工具脚本
+- `configs/` — 机器人配置（`standard3.yaml`：相机参数按实测写全 + 标定内参）
+- `src/` — 主程序（`standard.cpp` 空壳，随阶段推进长出检测/跟踪/决策）
+- `tests/` — 模块测试（`camera_test` 取流/帧率实测工具）
 - `calibration/` — 相机标定参数（内参 yaml + 标定记录表）
 - `reference/` — 参考仓库（各自独立 git，本仓库不追踪，详见下节）
+
+## 构建与运行
+
+```bash
+mkdir -p build && cd build && cmake .. && make -j4
+./build/standard                                  # 主程序空壳（取流 + 帧率打印）
+./build/camera_test --seconds=3                   # 相机取流/帧率实测
+./build/camera_test --exposure=4000 --roi=640x512 --decimation=2 --save=frame.png
+```
+
+- 依赖：OpenCV 4.5.4 / Eigen3 / yaml-cpp / spdlog / fmt + 大恒 Galaxy ARM64 SDK（头文件路径见顶层 `CMakeLists.txt` 的 `GALAXY_INC`）
+- 注意：OpenCV 参数解析器**必须用 `=` 传值**（`--exposure=4000`）；写空格分隔会把数值当成配置文件路径
+- 相机设置会跨开关机保留，所以 `configs/standard3.yaml` 里几何参数（ROI/抽行）写全，保证每次启动形态确定
 
 ## 文档
 
@@ -42,7 +59,7 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 - **configs/**：按兵种 YAML（camera.yaml 含相机参数）；**assets/**：OpenVINO 模型；**calibration/**：相机/手眼标定工具源码；**tests/**：各模块测试程序
 - **依赖**：OpenCV、Eigen3、fmt、spdlog、yaml-cpp、nlohmann_json、OpenVINO 2024.6（auto_buff 另用 Ceres）
 
-**本工程落地时的改造点**：① 相机按 `io/camera.hpp` 抽象新增大恒实现（Galaxy SDK C++ 或 gxipy）；② 模型链路换成 0526.onnx（Jetson 推理后端待选型）。
+**本工程落地时的改造点**：① ~~相机按 `io/camera.hpp` 抽象新增大恒实现~~ ✅ 已完成（`io/galaxy/`，Galaxy SDK C++，2026-10-08 编译 + 跑流实测通过）；② 模型链路换成 0526.onnx + TensorRT（后端已拍板 FP16，engine 另有）；③ 下位机协议待定。
 
 ## 相机 SDK
 
