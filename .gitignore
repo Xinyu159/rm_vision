@@ -1,0 +1,16 @@
+# 参考代码（各自是独立 git 仓库，不重复纳入）
+reference/
+
+# 构建产物
+build/
+*.o
+*.so
+*.a
+
+# Python
+__pycache__/
+*.pyc
+
+# 编辑器
+.vscode/
+.idea/
