@@ -19,6 +19,7 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 - `models/` — 检测模型本体入库，与代码版本对齐（`0526.onnx`，4.2MB）
 - `docs/` — 分析与验证文档
 - `tools/` — 工具脚本
+- `calibration/` — 相机标定参数（内参 yaml + 标定记录表）
 - `reference/` — 参考仓库（各自独立 git，本仓库不追踪，详见下节）
 
 ## 文档

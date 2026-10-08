@@ -4,7 +4,7 @@
 > 维护约定：有了新结论，就从"待弄清"挪到"已确认"；被推翻的结论写清纠正理由后并入"已纠正的误区"。
 > 最后更新：2026-10-08
 
-**一句话现状**：模型接口验证完毕；推理后端拍板 TensorRT FP16（NX 锁频后 164 FPS）；相机 SDK 已装但尚未摸参数；下一步 = C++ 最小闭环 + 相机参数摸底。
+**一句话现状**：模型接口验证完毕；推理后端拍板 TensorRT FP16（NX 锁频后 164 FPS）；相机参数已直读摸清（A1 ✅、内参已入库 `calibration/`）；下一步 = 相机跑流实测帧率 + C++ 最小闭环。
 
 ---
 
@@ -41,14 +41,29 @@
 | 89 fps | 11.24 ms | 全链路预估 7.5~8.5ms（推理 6.08 + 拷贝 0.4 + 预处理 0.3-0.5 + 后处理 0.5-1 + PnP/EKF 0.3）→ **有余量** |
 | 180 fps | 5.56 ms | **NN 单独 6.08ms 已超 → 直连 NN 路径到不了 180**；正主是传统视觉（灯条法，目标 <5ms），或"传统 180 + NN 低频复核"双频混合 |
 
-### 5. 相机（大恒 MER-139-210U3C）
+### 5. 相机（大恒 MER-139-210U3C，手册/官网同档叫 MER-131-210U3C）
 
-- USB3、VID:PID `2ba2:4d55`、lsusb 名 `Daheng Imaging MER-139-210U3C`；Galaxy ARM64 SDK（2.4.2507.8231）**已装**（库在 `/lib`、udev 规则在 `/etc/udev/rules.d/99-galaxy-u3v.rules`、头文件/样例在 `~/sdk/galaxy/.../Galaxy_camera/{inc,lib/armv8,sample}`）
-- 同系列 131-210U3C 公开规格：1280×1024、**最高 210fps**、1/2" PYTHON1300 **全局快门**、4.8µm；本型号精确上限公开查不到 → **待 SDK 直读**（见待办 A1）
-- **帧率公式（手册原文）**：`T_f = Max(ImageSize×10⁶/BandWidth, ImageSize×10⁶/ThroughputLimit, T_acq, T_exp)`，`ImageSize = W×H×字节数+84`（8bit=1、10/12bit=2）→ 拉帧率四旋钮：**8bit 像素格式（BayerRG8）**、**ROI 裁剪**、**缩短曝光**、**AcquisitionFrameRate(先 Enable) + DeviceLinkThroughputLimit 限流检查**
-- 12bit 下 1280×1024@210fps 需 550MB/s > USB3 理论 400MB/s → **8bit（275MB/s）才谈得上满帧率**
-- 全局快门 → 高速旋转无果冻效应（RM 场景加分）
+- USB3、VID:PID `2ba2:4d55`、SN `KE0210030288`、固件 `01.02.011.004`；Galaxy ARM64 SDK（2.4.2507.8231）**已装**（库在 `/lib`、udev 规则在 `/etc/udev/rules.d/99-galaxy-u3v.rules`、头文件/样例在 `~/sdk/galaxy/...`；**Python 绑定 gxipy 免安装，PYTHONPATH 指过去即用**）
+- **2026-10-08 SDK 直读实测**（全量 124 行存 `docs/camera-parameter-dump.txt`）：
+
+| 项 | 实测值 |
+|---|---|
+| 型号（相机固件自报） | **MER-139-210U3C**（同档手册名为 MER-131-210U3C；同画幅，**不是 1.39MP 画幅**） |
+| 分辨率 | 1280×1024 |
+| 像素格式 | **只有 BayerRG8 / BayerRG10**（BayerRG 彩色阵列；无 RGB 直出、无 12bit） |
+| 帧率 | 设定范围 0.8–10000 Hz；**全幅物理上限 210 fps** |
+| 曝光 | 20 µs – 1 s |
+| 增益 | 0 – 16 dB |
+| ROI | 宽 64–1280（步进 **16**）、高 64–1024（步进 2）；另有 2× 抽行/抽列（Decimation） |
+| 带宽 | DeviceLinkThroughputLimit 上限 **400 MB/s**（当前设 300 MB/s） |
+
+- **曝光卡帧率（实锤验证）**：读取时 ExposureTime=10ms → `CurrentAcquisitionFrameRate` 实测只有 **99.4 fps**（≈1/10ms），正好验证手册公式 `帧率 = min(设定值, 1/曝光, 带宽/单帧大小)`。**要 210fps → 曝光 ≤4.76ms**；BayerRG8 全幅 210fps 需 275MB/s（≤300 现限 ✓）；BayerRG10 按 2 字节/像素算需 550MB/s 超 400 上限 → **满帧率只能用 BayerRG8**
+- **标定内参已拿到**（`calibration/mer1_camera_params.yaml`，2026-08-15，45 张 11×8/30mm 棋盘格）：fx=1292.46、fy=1292.15、cx=651.55、cy=485.41；标准 5 参畸变 k1=-0.0791 / k2=0.1741 / p1=-0.00067 / p2=+0.00005 / k3=-0.1185；RMS 0.098px、留出集 0.071px（质量优秀）；拍摄条件 5ms 曝光 / 15.3dB / WB 1.582 / 光圈锁死（标定记录表见 `calibration/Galaxy_MER_list.txt`，部分栏目未填）
+  - 推算：按 4.8µm 像元推 f≈6.2mm；HFOV≈53°、VFOV≈43°；1m 处 1px≈0.77mm
+  - **用内参注意**：主点不在画面中心（比中心偏 **+12.1 / −26.1 px**），PnP 不能假设居中；**开 ROI 的换算规则**：只裁切不缩放 → cx/cy 平移、fx/fy 不变；缩放（降采样）→ 四参数等比；动对焦/光圈/镜头 → 必须重标
+- 全局快门（131 同款 PYTHON1300）→ 高速旋转无果冻效应（RM 场景加分）
 - 取帧策略（设计决定）：**永远取最新帧**，处理追不上就丢旧帧，不排队堆积
+- 白平衡当前 Off（BalanceRatio=1.0；标定时是 1.582）—— RM 要分红蓝，WB 策略（固定值 vs Auto Once）做颜色链路时定
 
 ### 6. 工程与开发流程
 
@@ -57,6 +72,7 @@
 - 开发链路：VS Code Remote-SSH（`ssh jetson`）；文档集中在 `docs/`；md 预览装 Markdown Preview Enhanced（或内置 Ctrl+Shift+V）
 - 下载约定：**所有下载由用户本人完成**（只需给出名字/链接）；给 Jetson 的大文件走"笔记本下载 → 局域网 scp → Jetson 解压"（别用慢速隧道硬拉）
 - 网络：校园网直连常不通，**别用 ping 判断**（封 ICMP），用 `curl -I`；代理在笔记本 `127.0.0.1:17897`（http/socks5 同端口）
+- 相机参数一键复读：`PYTHONPATH=~/sdk/galaxy/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/Galaxy_Linux_Python_2.4.2503.9202/api python3 tools/gx_dump.py`（只读遍历全部特征）
 - 运维坑（已踩）：`pkill -f` 会匹配到自己 ssh 脚本正文导致自杀 → 用 `pkill -x` 或字符串拼接；TRT 建引擎必须限 `--workspace` + 先腾内存
 
 ### 7. 已纠正的误区（别再犯）
@@ -65,14 +81,16 @@
 - ❌ "深大颜色映射写错了" → 模型实测映射与同济一致，是深大 README 文字/旧代码表述有出入
 - ❌ "省电档也能测性能" → 默认 10W 档 GPU 被锁 510MHz，**任何性能结论必须在锁频态下测**
 - ❌ "onnxruntime 是更快的另一个选项" → 同层封装：TRT-EP 持平或更慢，CUDA-EP 明确更慢
+- ❌ "MER-139 和 MER-131 是两个不同画幅的型号" → 同一档 1280×1024@210fps：手册叫 131-210U3C、相机固件自报 139-210U3C
+- ❌ "帧率设了 210 就是 210" → 帧率被 1/曝光 卡：实测 ExposureTime=10ms 时只有 99.4fps（改曝光 ≤4.76ms 才能到 210）
 
 ---
 
 ## 二、必须弄清的问题（开放项）
 
-**A. 相机（最先做，影响全链路设计）**
-1. 用 SDK 直读本机真实参数：分辨率上限、`AcquisitionFrameRateRange`、支持的 PixelFormat、ROI 步进、`DeviceLinkThroughputLimit` 范围；并**实测**：8bit 全幅最高帧率、典型 ROI 档帧率、1ms 曝光下能跑到多少
-2. Bayer→RGB 转换放在哪：CPU(OpenCV) / GPU(自写 CUDA 或 NPP) / SDK 输出 —— 实测 1.3MP 各自耗时后定
+**A. 相机**
+1. ~~用 SDK 直读本机真实参数~~ ✅ 已完成（2026-10-08，见 §5 与 `docs/camera-parameter-dump.txt`）。**剩余：跑流实测** —— 曝光设 ≤4.7ms 验证全幅真能到 210fps；测典型 ROI 档（1024×768 / 640×512 等）各能到多少；2× Decimation 档
+2. Bayer→RGB 转换放在哪：**相机不直出 RGB（只有 BayerRG8/10），转换必做** —— CPU(OpenCV) / GPU(自写 CUDA 或 NPP) / SDK 各自耗时实测后定
 3. 相机时间戳质量（SDK 帧时间戳 vs 主机时间）→ 决定 EKF 的时间基准
 
 **B. 性能（决定 89/180 能否落地）**
@@ -83,7 +101,7 @@
 **C. 工程接口（开工闭环前定）**
 7. 线程模型与零拷贝方案：取帧/推理/后处理线程分工；pinned 内存 + GPU 预处理；时间戳如何贯穿到 EKF
 8. 配置面：相机 yaml（fps/ROI/曝光/gain/PixelFormat）+ 模型路径 + 阈值参数（对齐同济 configs 风格）
-9. **标定内参与 ROI 的兼容性**：已有内参是在什么分辨率/ROI 下标定的？改 ROI 后内参要重标或换算 —— 动 ROI 前必须先弄清
+9. ~~标定内参与 ROI 的兼容性~~ ✅ 已解决：内参为全幅 1280×1024 无 ROI，换算规则见 §5（小尾巴：标定文件名写 131-210U3MC，与相机 139 命名差异已查明为同档）
 10. 只打步兵（3V3）→ 后处理类别裁剪策略（丢弃非目标类别，阈值/NMS 是否需相应调整）
 
 **D. 后续阶段（未开始）**
@@ -94,7 +112,7 @@
 
 ## 三、建议推进顺序
 
-1. **相机参数摸底**（A1~A3）—— 当天可完成
+1. ~~相机参数摸底~~ ✅ 已完成（2026-10-08）→ 剩下**跑流实测**（A1 剩余 + A2 + A3）
 2. **C++ 最小闭环**：engine 加载 + 相机取帧 + 推理 + 解码存图 → 量化端到端耗时（顺带回答 C7/C8 的初版）
 3. **传统法原型**验证 180fps 可行性（B5）
 4. 架构铺开（对齐同济 `tasks/auto_aim`、`io/`、`tools/`、`configs/` 目录）

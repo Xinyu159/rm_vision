@@ -1,0 +1,23 @@
+# 单目相机标定参数 — MER-131-210U3MC
+# 由 calibrate.py 自动生成，遵循 CALIBRATION_PLAN.md v1.0（棋盘格 11x8, 30mm）
+camera_model: MER-131-210U3MC
+resolution: [1280, 1024]
+fx: 1292.4613
+fy: 1292.1487
+cx: 651.550
+cy: 485.413
+distortion_model: standard
+k1: -0.0791303
+k2: 0.1741172
+p1: -0.0006693
+p2: 0.0000524
+k3: -0.1184516
+rms: 0.0981            # 重投影误差 (px)，参与标定图
+holdout_rms: 0.0710   # 留出验证 8 张 (px)
+num_images: 45
+date: 2026-08-15
+# ---- 拍摄条件（标定记录表） ----
+exposure_us: 5000
+gain_db: 15.3
+white_balance: 1.5820
+aperture_locked: yes
