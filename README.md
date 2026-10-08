@@ -26,6 +26,7 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 
 - [0526 模型验证报告](docs/0526-model-verification.md) — 四点装甲板检测确认可用 + 与同济 Armor/YOLO 接口映射（第一步结论）
 - [结论与待定事项](docs/conclusions-and-open-items.md) — 已确认结论台账 + 必须弄清的问题清单（传承用，持续更新）
+- [sp_vision_25 文件结构与线程架构](docs/sp-vision-25-structure-and-threads.md) — 实读版：三层结构 / 线程清单 / 同步原语 / 移植对照表
 
 ## 参考代码（reference/，不纳入本仓库版本管理）
 
