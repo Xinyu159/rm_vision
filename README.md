@@ -43,17 +43,13 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 
 ## 相机 SDK
 
-大恒 Galaxy ARM64 SDK（Gige+U3 合一包，支持 MER-139-210U3C）已下载解压至 `~/sdk/galaxy/`，**尚未安装**：
+大恒 Galaxy ARM64 SDK（Gige+U3，2.4.2507.8231）**已安装并验证**（2026-10-08）：
 
-```bash
-# 1) C SDK（装完重启一次，或重插相机）
-cd ~/sdk/galaxy/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/
-sudo ./Galaxy_camera.run
-
-# 2) Python 绑定 gxipy（可选；需先装好 1)）
-cd ../Galaxy_Linux_Python_2.4.2503.9202/api
-python3 setup.py build && sudo python3 setup.py install
-```
+- 运行库在 `/lib/`：`libgxiapi.so`、`liblog4cplus_gx.so`、GenTL 生产者 `GxGVTL.cti`/`GxU3VTL.cti`（已在 ldconfig 中）
+- udev 规则 `/etc/udev/rules.d/99-galaxy-u3v.rules`（VID `2ba2` → 0666 + uaccess）
+- 相机已在 USB3 总线上枚举：`lsusb -d 2ba2:4d55` → `Daheng Imaging MER-139-210U3C`
+- 开发用头文件/库/示例在解压包内 `~/sdk/galaxy/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/Galaxy_Linux-arm64_Gige-U3_2.4.2507.8231/Galaxy_camera/`：`inc/`（GxIAPI.h、DxImageProc.h）、`lib/armv8/`、`sample/GxSingleCamColor/`（彩色采集示例，io 层参考）
+- Python 绑定 gxipy 未装（C++ 链路不需要）
 
 ## 环境备忘
 
