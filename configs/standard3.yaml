@@ -1,0 +1,27 @@
+enemy_color: "red"
+
+#####-----相机（大恒 Galaxy MER-139-210U3C）-----#####
+camera_name: "galaxy"
+galaxy:
+  sn: "KE0210030288"        # 留空则按 index 打开
+  index: 1
+  # 几何参数必须写全！相机设置会跨开关机保留（实测），不写会沿用上次遗留的 ROI
+  roi_width: 1280           # 宽步进 16、高步进 2；-1 = 不改
+  roi_height: 1024
+  roi_x: 0
+  roi_y: 0
+  decimation: 1             # 1~2，抽行抽列；驱动放在 ROI 之后设置（改 ROI 会把抽行重置回 1）
+  exposure_us: 10000        # 微秒。帧率上限 ≈ 1/曝光：要 210fps 需 ≤4760
+  gain_db: 0                # 0~16
+  framerate: 210            # 设定值；实际取 min(设定, 1/曝光, 带宽/帧大小)
+  pixel_format: "BayerRG8"  # 满帧率必须 8bit（BayerRG10 按 2B/px 算会超 400MB/s）
+
+#####-----标定（2026-08-15 标定，台账见 calibration/）-----#####
+camera_matrix: [1292.4613, 0, 651.550, 0, 1292.1487, 485.413, 0, 0, 1]
+distort_coeffs: [-0.0791303, 0.1741172, -0.0006693, 0.0000524, -0.1184516]
+# TODO: 手眼标定后补 R_gimbal2imubody / R_camera2gimbal / t_camera2gimbal
+
+#####-----TODO（随模块移植逐个补齐）-----#####
+# yolo（模型路径/阈值/use_traditional）
+# tracker / aimer / shooter / solver 参数（对齐 sp_vision_25 configs/standard3.yaml）
+# cboard（下位机协议定型后）
