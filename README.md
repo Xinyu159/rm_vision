@@ -17,7 +17,13 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 ## 目录
 
 - `models/` — 检测模型本体入库，与代码版本对齐（`0526.onnx`，4.2MB）
+- `docs/` — 分析与验证文档
+- `tools/` — 工具脚本
 - `reference/` — 参考仓库（各自独立 git，本仓库不追踪，详见下节）
+
+## 文档
+
+- [0526 模型验证报告](docs/0526-model-verification.md) — 四点装甲板检测确认可用 + 与同济 Armor/YOLO 接口映射（第一步结论）
 
 ## 参考代码（reference/，不纳入本仓库版本管理）
 
