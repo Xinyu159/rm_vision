@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
@@ -35,7 +36,9 @@ const cv::String keys =
   "{roi           |      | ROI 尺寸 WxH，如 1024x768（不改则不填）}"
   "{decimation d  | 0    | 抽行抽列 1~2（>0 才生效）}"
   "{seconds s     | 3    | 测量时长（秒）}"
-  "{save          |      | 预热后存一帧到该路径（Bayer→BGR 的 png）}";
+  "{save          |      | 预热后存一帧到该路径（Bayer→BGR 的 png）}"
+  "{save-raw      |      | 存原始 Bayer 帧（8bit 灰度 png，判阵列用）}"
+  "{save-all      |      | 存 4 种 Bayer 解码变体 <前缀>_RG/BG/GR/GB.png（判阵列用）}";
 
 int main(int argc, char ** argv)
 {
@@ -88,12 +91,61 @@ int main(int argc, char ** argv)
   cv::String save = cli.get<cv::String>("save");
   if (!save.empty() && !img.empty()) {
     cv::Mat bgr;
-    if (img.channels() == 1)
-      cv::cvtColor(img, bgr, cv::COLOR_BayerRG2BGR);
-    else
+    if (img.channels() == 1) {
+      // 传感器是 RGGB（左上角=红，相机自报 "BayerRG8"），但 OpenCV 的 Bayer 命名
+      // 看的是第二行第二列：RGGB 布局要用 COLOR_BayerBG2BGR！用 RG 会红蓝互换。
+      // 2026-10-08 纯红屏实测定案：BG 变体 → 红；RG 变体 → 蓝。
+      cv::cvtColor(img, bgr, cv::COLOR_BayerBG2BGR);
+    } else {
       bgr = img;
+    }
     cv::imwrite(save, bgr);
     tools::logger()->info("[camera_test] 已存帧: {}", (std::string)save);
+  }
+
+  // Bayer 阵列判型：原始帧 + 4 种解码变体 + 中心区子阵均值
+  cv::String save_raw = cli.get<cv::String>("save-raw");
+  if (!save_raw.empty() && !img.empty()) {
+    cv::imwrite(save_raw, img);
+    tools::logger()->info("[camera_test] 已存原始 Bayer: {}", (std::string)save_raw);
+  }
+
+  cv::String save_all = cli.get<cv::String>("save-all");
+  if (!save_all.empty() && !img.empty() && img.channels() == 1) {
+    const struct
+    {
+      const char * name;
+      int code;
+    } patterns[] = {
+      {"RG", cv::COLOR_BayerRG2BGR},
+      {"BG", cv::COLOR_BayerBG2BGR},
+      {"GR", cv::COLOR_BayerGR2BGR},
+      {"GB", cv::COLOR_BayerGB2BGR}};
+    for (const auto & p : patterns) {
+      cv::Mat bgr;
+      cv::cvtColor(img, bgr, p.code);
+      std::string path = (std::string)save_all + "_" + p.name + ".png";
+      cv::imwrite(path, bgr);
+      tools::logger()->info("[camera_test] 已存变体: {}", path);
+    }
+  }
+
+  if (!img.empty() && img.channels() == 1) {
+    // 中心 256x256 的 4 个 Bayer 子阵均值（避开边缘渐晕；[00] 是画面左上角像素所在子阵）
+    int cw = std::min(256, img.cols), chh = std::min(256, img.rows);
+    cv::Rect r((img.cols - cw) / 2, (img.rows - chh) / 2, cw, chh);
+    double sum[2][2] = {{0, 0}, {0, 0}};
+    long cnt[2][2] = {{0, 0}, {0, 0}};
+    for (int y = r.y; y < r.y + r.height; y++) {
+      const uint8_t * rowp = img.ptr<uint8_t>(y);
+      for (int x = r.x; x < r.x + r.width; x++) {
+        sum[y % 2][x % 2] += rowp[x];
+        cnt[y % 2][x % 2]++;
+      }
+    }
+    tools::logger()->info(
+      "[camera_test] 中心 {}x{} 子阵均值: [00]={:.1f} [01]={:.1f} [10]={:.1f} [11]={:.1f}", cw, chh,
+      sum[0][0] / cnt[0][0], sum[0][1] / cnt[0][1], sum[1][0] / cnt[1][0], sum[1][1] / cnt[1][1]);
   }
 
   // 看门狗：连续 3 秒没有新帧就判死退出，避免 read() 永久阻塞

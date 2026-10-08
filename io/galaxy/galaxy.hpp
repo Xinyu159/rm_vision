@@ -53,7 +53,8 @@ public:
 private:
   struct CameraData
   {
-    cv::Mat img;  // 原始 BayerRG8（CV_8UC1）；Bayer→BGR 的转换位置另行决定（台账 A2）
+    cv::Mat img;  // 原始 BayerRG8（CV_8UC1）；转换位置另行决定（台账 A2）。
+                  // 转 BGR 注意 OpenCV 命名反直觉：RGGB 布局要用 COLOR_BayerBG2BGR（台账 §5 实测）
     std::chrono::steady_clock::time_point timestamp;
   };
 
