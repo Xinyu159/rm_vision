@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <opencv2/dnn.hpp>
 #include <stdexcept>
@@ -104,16 +105,26 @@ struct YOLO::Impl
 
   void * dev_in = nullptr;
   void * dev_out = nullptr;
+  void * host_in = nullptr;  // 输入主机缓冲（优先 pinned，见 ctor）
+  bool host_in_pinned = false;
   std::vector<void *> bindings;
   std::vector<std::uint8_t> host_out;
 
   // CPU 侧缓存（避免每帧重新分配）
-  cv::Mat bayer_bgr, resized, canvas, blob32, blob16, out_f32;
+  cv::Mat bayer_bgr, canvas, out_f32;
+  std::vector<cv::Mat> channels;   // split 输出缓存（B G R）
+  int last_nw = -1, last_nh = -1;  // 上次 letterbox 实际尺寸（黑边只在变化时重清）
 
   ~Impl()
   {
     if (dev_in) cudaFree(dev_in);
     if (dev_out) cudaFree(dev_out);
+    if (host_in) {
+      if (host_in_pinned)
+        cudaFreeHost(host_in);
+      else
+        std::free(host_in);
+    }
     if (stream) cudaStreamDestroy(stream);
     if (context) context->destroy();
     if (engine) engine->destroy();
@@ -186,6 +197,15 @@ YOLO::YOLO(const YoloConfig & config) : config_(config), impl_(new Impl)
   impl_->bindings[impl_->in_index] = impl_->dev_in;
   impl_->bindings[impl_->out_index] = impl_->dev_out;
 
+  // 输入主机缓冲用 pinned：H2D 实测 0.54ms → 0.19ms（2.4MB fp16）；失败则退回普通内存
+  if (cudaHostAlloc(&impl_->host_in, impl_->in_bytes, cudaHostAllocDefault) == cudaSuccess) {
+    impl_->host_in_pinned = true;
+  } else {
+    impl_->host_in = std::malloc(impl_->in_bytes);
+    if (!impl_->host_in) throw std::runtime_error("分配输入主机缓冲失败");
+    tools::logger()->warn("[yolo] pinned 主机内存分配失败，退回普通内存（H2D 会慢些）");
+  }
+
   tools::logger()->info(
     "[yolo] engine 载入完成: {}  输入 {}x{} {}  输出 {}x{} {}  conf≥{:.2f} nms {:.2f} "
     "big_ratio {:.2f}",
@@ -203,6 +223,12 @@ std::list<Armor> YOLO::detect(const cv::Mat & img)
   if (img.empty()) return armors;
 
   // ---- 预处理（对齐 tools/verify_0526.py：等比缩放到装得下、左上对齐、黑边补齐）----
+  // 2026-10-09 提速（离线分环节实测，见台账 §6/B4；①②③输出与旧实现逐位一致，已校验）：
+  //   ① resize 直接写 canvas 左上 ROI —— 免临时 Mat + copyTo
+  //   ② 黑边只在尺寸变化时清一次 —— 输入尺寸固定时稳态零开销
+  //   ③ 尾段融合：split + 按平面 convertTo(1/255, 输入类型) 直写主机缓冲，
+  //      免 fp32 NCHW 中转（原 blobFromImage+convertTo 约 2.8ms → 约 0.8ms）
+  //   ④ H2D 走 pinned + 异步（约 0.54 → 0.19ms；与推理同流，天然先拷后推）
   auto t0 = clock::now();
   cv::Mat src;
   if (img.channels() == 1) {
@@ -218,26 +244,36 @@ std::list<Armor> YOLO::detect(const cv::Mat & img)
   const int nh = (int)(src.rows * scale_);
   const int nw = (int)(src.cols * scale_);
 
-  impl_->canvas.create(impl_->input_h, impl_->input_w, CV_8UC3);
-  impl_->canvas.setTo(cv::Scalar(0, 0, 0));
-  cv::resize(src, impl_->resized, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
-  impl_->resized.copyTo(impl_->canvas(cv::Rect(0, 0, nw, nh)));
-
-  // BGR→RGB、/255、NCHW 一次完成
-  cv::dnn::blobFromImage(
-    impl_->canvas, impl_->blob32, 1.0 / 255.0, cv::Size(), cv::Scalar(), true, false, CV_32F);
-
-  const void * in_host = nullptr;
-  if (impl_->in_dtype == nvinfer1::DataType::kHALF) {
-    impl_->blob32.convertTo(impl_->blob16, CV_16F);  // 本 engine 输入即 fp16
-    in_host = impl_->blob16.ptr();
-  } else if (impl_->in_dtype == nvinfer1::DataType::kFLOAT) {
-    in_host = impl_->blob32.ptr();
-  } else {
-    throw std::runtime_error("不支持的输入类型（只支持 fp32/fp16）");
+  if (impl_->canvas.rows != impl_->input_h || impl_->canvas.cols != impl_->input_w ||
+      impl_->canvas.type() != CV_8UC3) {
+    impl_->canvas.create(impl_->input_h, impl_->input_w, CV_8UC3);
+    impl_->last_nw = impl_->last_nh = -1;
   }
-  if (cudaMemcpy(impl_->dev_in, in_host, impl_->in_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
-    throw std::runtime_error("cudaMemcpy 输入失败");
+  if (nw != impl_->last_nw || nh != impl_->last_nh) {  // 黑边区域变了才重清
+    impl_->canvas.setTo(cv::Scalar(0, 0, 0));
+    impl_->last_nw = nw;
+    impl_->last_nh = nh;
+  }
+  cv::resize(src, impl_->canvas(cv::Rect(0, 0, nw, nh)), cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
+
+  // BGR→RGB、/255、拼成 NCHW（平面序 R|G|B，与 blobFromImage(swapRB=true) 输出逐位一致）
+  const int in_cv_type = impl_->in_dtype == nvinfer1::DataType::kHALF  ? CV_16F
+                         : impl_->in_dtype == nvinfer1::DataType::kFLOAT ? CV_32F
+                                                                         : -1;
+  if (in_cv_type < 0) throw std::runtime_error("不支持的输入类型（只支持 fp32/fp16）");
+  cv::Mat host_in(
+    impl_->input_h * 3, impl_->input_w, in_cv_type, impl_->host_in);  // 覆盖主机缓冲的视图
+  cv::split(impl_->canvas, impl_->channels);                          // B G R
+  impl_->channels[2].convertTo(host_in.rowRange(0, impl_->input_h), in_cv_type, 1.0 / 255.0);
+  impl_->channels[1].convertTo(
+    host_in.rowRange(impl_->input_h, 2 * impl_->input_h), in_cv_type, 1.0 / 255.0);
+  impl_->channels[0].convertTo(
+    host_in.rowRange(2 * impl_->input_h, 3 * impl_->input_h), in_cv_type, 1.0 / 255.0);
+
+  if (cudaMemcpyAsync(
+        impl_->dev_in, impl_->host_in, impl_->in_bytes, cudaMemcpyHostToDevice, impl_->stream) !=
+      cudaSuccess)
+    throw std::runtime_error("cudaMemcpyAsync 输入失败");
   auto t1 = clock::now();
 
   // ---- 推理 ----

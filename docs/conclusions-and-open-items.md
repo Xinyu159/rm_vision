@@ -95,7 +95,9 @@
 - **实时预览 `tests/camera_view`（2026-10-08）**：两种模式——窗口（Jetson 接显示器时 `DISPLAY=:1` 直接开）/ `--serve=8080` 内置 MJPEG 服务，**日常用浏览器看**（http://10.42.0.80:8080/；画面里烘焙了 fps/延迟/曝光，约 30fps 推流，`--scale` 控制清晰度与带宽）。**叠加文字只能用 ASCII**（Hershey 字体中文=「??」）。两个测试程序的命令行覆盖逻辑已抽到 `tests/cli_common.hpp` 共用
 - **检测链路落地（2026-10-08，Stage 2 闭环）**：`tasks/auto_aim/armor.{hpp,cpp}`（数据结构，语义对齐同济，含 0526 的三处差异修正）+ `tasks/auto_aim/yolo.{hpp,cpp}`（TensorRT FP16 后端：engine 载入 + letterbox 预处理 + 解码 + NMS，接口对齐同济 YOLO/yolov5.cpp）；`tests/detect_view`（相机→检测→画框→浏览器，带全链路耗时叠加）、`tests/yolo_test`（单图离线检测：阈值/耗时/逐框输出，用于对拍与回归）。MJPEG 服务抽到 `tools/mjpeg_server.hpp` 三个程序共用
   - engine 绑定实测：`images` fp16 `[1,3,640,640]` → `output` fp32 `[1,25200,22]`（与验证报告一致）；解码配方逐行照 `tools/verify_0526.py`（左上对齐黑边 letterbox、BGR→RGB、/255、关键点重排、sigmoid(col8)、argmax 颜色/编号）
-  - 实测（锁频态，1280×1024 Bayer 输入）：**检测单帧 p50 = 预处理 6.5 + 推理 7.1 + 解码 1.2 ≈ 15ms（≈67fps 管线能力）**；带浏览器推流的完整循环 47–51fps（绘制 11ms 按需摊销，读帧 ~0）
+  - 实测（锁频态，1280×1024 Bayer 输入）：**检测单帧 p50 = 预处理 2.7 + 推理 7.2 + 解码 1.0 ≈ 11ms（≈92fps 管线能力）**；带浏览器推流的完整循环 65fps（绘制 ~10.5ms 每 33ms 一次，读帧 ~0）
+  - **预处理提速（2026-10-09）**：离线分环节实测拆解 → 大头**不是**解马赛克（0.98ms），而是 resize（2.07ms，INTER_LINEAR 全幅降采样）+ blobFromImage（2.31ms，fp32 NCHW 中转）+ fp16 转换（0.48）+ H2D（0.54）。改法：resize 直接写 canvas 左上 ROI（学同济）、黑边只在尺寸变化时清、split+按平面 convertTo 直写 **pinned** 主机内存（免 fp32 中转）、cudaMemcpyAsync —— 前三项与旧输出**逐位一致**（离线校验 max diff = 0）→ 6.5 → **2.7ms**。试过但未采用：半幅 binning 解马赛克（再省 0.5ms，PSNR 32.7dB 有损，不值）；大恒 SDK `DxRaw8toRGB24`（调用返回 -104，本 SDK 里不可用，已排除）；GPU 预处理（NPP/VPI 都在场，但 CPU 已不是瓶颈，备用）
+  - 同济为什么不卡这一步：① 海康相机直出 BGR8（相机端去马赛克，`hikrobot.cpp` 设 `PixelType_Gvsp_BGR8_Packed`）；② OpenVINO 直接吃 u8 NHWC 零拷贝（`ov::Tensor(u8,{1,640,640,3}, input.data)`），主机侧只剩一次 resize 且直写输入 ROI。我们的相机只有 Bayer 输出、TRT 输入是 fp16 planar NCHW，这两步转换省不掉
   - 与同济的差异（有意为之）：① 未建 `detector.{hpp,cpp}`——同济那是传统视觉检测器（Classifier+PCA 角点矫正），本阶段用不到，`use_traditional` 到传统法阶段再补；② 未做软件 ROI（相机 ROI 已覆盖，且会改变坐标映射）；③ 后端 OpenVINO→TRT
 - 踩坑（检测链路）：**JPEG 编码（~15ms/帧）绝不能放主循环**——实测放主循环把管线从 ~50fps 拖到 27fps，已改为服务线程编码+推送；**离线测耗时必须先预热**（首次 detect 含 CUDA 上下文/OpenCV 线程池懒初始化，100ms+），且别在推流运行中测（争抢让预处理 6.5ms→41ms）
 - 踩坑：`cv::CommandLineParser` 的参数**必须用 `=` 传值**（`--exposure=4000`）；写 `--exposure 4000` 会把 4000 当成位置参数（配置路径），camera_test 里已加防呆提示
@@ -113,6 +115,8 @@
 - ❌ "白平衡算一次就一劳永逸" → 相机设置跨会话保留，且 WB Once **定格在触发那一瞬的画面**：开机时镜头前有红物体 → 算出的 B 增益 1.86 会一直带下去，把之后的正常画面推成蓝调（实测踩过）。修正：预览窗口按 `w` 重做，或 `--wb=Off` 沿用现值；做颜色链路时改为按现场光定的固定 R/B 增益
 - ❌ "离线跑一次单帧就是真实耗时" → 首次 detect 含 CUDA 上下文 + OpenCV 线程池懒初始化（实测 100ms 起），且和推流程序同时跑会争抢（预处理 6.5ms→41ms）。正确做法：预热 3 次后跑 30 次取分位数，且机器空闲（`yolo_test` 已按此实现）
 - ❌ "编码放主循环无所谓" → MJPEG 的 JPEG 编码一次 ~15ms，放主循环把整条检测管线从 ~50fps 拖到 27fps（实测分解：绘制 p50 22ms）。已改为服务线程编码（`tools/mjpeg_server.hpp`），主循环只画+发布
+- ❌ "预处理的大头是 Bayer 解马赛克" → 分环节实测：解马赛克只 0.98ms（6 线程），大头是 resize 2.07 + blobFromImage 2.31（fp32 中转）。融合尾段 + ROI 直写 + pinned 后整段 6.5→2.7ms（优化前后输出逐位一致）
+- ❌ "大恒 SDK 有 DxRaw8toRGB24，解马赛克可以用它" → 实测调用返回 -104（错误码，输出缓冲一个字节没写），本 SDK 里不可用，别再试
 
 ---
 
@@ -120,7 +124,7 @@
 
 **A. 相机**
 1. ~~用 SDK 直读本机真实参数~~ ✅ / ~~跑流实测~~ ✅ 均已完成（2026-10-08）：210fps 硬上限、曝光阈值 4.7ms、限帧/ROI/抽行全部实测（表见 §5）
-2. Bayer→RGB 转换放在哪：**相机不直出 RGB（只有 BayerRG8/10），转换必做** —— 链路已打通、解码常量实测定案（RGGB → OpenCV `COLOR_BayerBG2BGR`，见 §5）；CPU 侧耗时已量到（全幅转换+缩放+blob 合计约 6.5ms，是检测链路最大的 CPU 项）；**待办**：GPU 预处理（VPI / cuda 核）方案实测后定最终转换位置
+2. Bayer→RGB 转换放在哪：**相机不直出 RGB（只有 BayerRG8/10），转换必做** —— 链路已打通、解码常量实测定案（RGGB → OpenCV `COLOR_BayerBG2BGR`，见 §5）；CPU 侧预处理已优化到 **2.7ms**（2026-10-09，拆解见 §6），不再是瓶颈 → **结论：暂不搬 GPU**（NPP/VPI 方案备用；真要做时顺带能实现"GPU 缓冲直连 TRT 输入、零 H2D"）
 3. 相机时间戳质量（SDK 帧时间戳 vs 主机时间）→ 决定 EKF 的时间基准（当前驱动用的是主机 `steady_clock`@DQBuf；相机帧自带 `nTimestamp`，SDK 已拿到但未接入对齐）
 
 **B. 性能（决定 89/180 能否落地）**
@@ -129,13 +133,13 @@
    | 环节 | p50 | p99 | 说明 |
    |---|---|---|---|
    | 读帧 | 0.01 | 0.03 | SDK 取最近帧，非阻塞 |
-   | 预处理 | 6.4~6.9 | 11.1 | Bayer→BGR 全幅 + letterbox + blob + fp16 转换 + H2D |
-   | 推理 | 7.1 | 7.8 | GPU 引擎本身 6.1ms / 164fps |
-   | 解码 | 1.0~1.3 | 1.4 | 25200 行筛选 + NMS + Armor 构造 |
-   | 绘制 | ~11 | ~20 | 每 33ms 一次（服务线程编码，不占主循环） |
-   | **检测合计** | **≈15** | — | ≈67fps 管线能力；带浏览器推流的完整循环实测 47~51fps |
+   | 预处理 | 2.7 | 4.5 | Bayer→BGR 全幅 + letterbox（ROI 直写）+ 平面 fp16 融合 + pinned 异步 H2D（2026-10-09 优化，原 6.5ms；拆解见 §6） |
+   | 推理 | 7.2 | 7.8 | GPU 引擎本身 6.1ms / 164fps |
+   | 解码 | 1.0 | 1.4 | 25200 行筛选 + NMS + Armor 构造 |
+   | 绘制 | ~10.5 | ~19 | 每 33ms 一次（服务线程编码，不占主循环） |
+   | **检测合计** | **≈11** | — | ≈92fps 管线能力；带浏览器推流的完整循环实测 ~65fps；**瓶颈已转到推理**（7.2ms，锁频上限 164fps） |
 
-   PnP/EKF 耗时等解算阶段补；预处理 6.5ms 是最大优化空间（见 A2）。
+   PnP/EKF 耗时等解算阶段补。
    **遗留**：与 `tools/verify_0526.py` 的逐框数值对拍未做（OpenCV dnn 读不了 fp16 的 ONNX、Jetson 上无 onnxruntime/onnx）——替代证据：engine 绑定与 python-TRT 探测一致（images fp16 → output fp32）、几何自洽（rect_err 0.03~0.08、角点序一致）、置信度与验证报告吻合（0.96、f600 检出 four）。打通需装 onnxruntime 或 onnx（由用户下载）
 5. 传统视觉 180fps 可行性：灯条法原型在 NX CPU 上能否 <5ms；"传统 + NN 双频混合"方案是否成立
 6. DLA（双核 NVDLA）能否卸载 0526 部分算子、收益多少 —— 低优先级
