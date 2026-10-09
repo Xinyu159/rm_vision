@@ -20,7 +20,7 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 - `docs/` — 分析与验证文档
 - `io/` — 硬件 IO 层：`camera.hpp` 相机抽象 + `galaxy/` 大恒驱动（捕获线程 + 守护重连线程，容量 1 丢旧留新队列）
 - `tasks/` — 算法层：`auto_aim/` 自瞄（`armor` 装甲板数据结构（语义对齐同济）、`yolo` TensorRT 检测后端：预处理/推理/解码/NMS）
-- `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml / mjpeg_server）+ 工具脚本
+- `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml / mjpeg_server）+ 工具脚本（`gx_dump.py` 相机参数复读、`verify_0526.py` python 参考实现、`cross_check.py` C++↔python 逐框对拍）
 - `configs/` — 机器人配置（`standard3.yaml`：相机参数按实测写全 + 标定内参 + `yolo:` 检测参数）
 - `src/` — 主程序（`standard.cpp` 空壳，随阶段推进长出检测/跟踪/决策）
 - `tests/` — 模块测试（`camera_test` 取流/帧率实测；`camera_view` 实时预览；`detect_view` 检测预览：相机→检测→画框→浏览器；`yolo_test` 单图离线检测/耗时对拍）+ `cli_common.hpp` 公共命令行件
@@ -48,6 +48,7 @@ mkdir -p build && cd build && cmake .. && make -j4
 - 白平衡（`balance_white_auto`）：默认 `Once` = 开流后按**当时画面**算一次；若这一刻镜头前恰好是红/蓝色物体，补偿会被带下去（实测踩过：正常画面变蓝调）→ 窗口模式按 `w` 重做，或加 `--wb=Off` 沿用当前增益不再重算
 - MJPEG 预览的 JPEG 编码在**服务线程**做（`tools/mjpeg_server.hpp`），主循环只画+发布——编码一次 ~15ms，放主循环会把检测管线从 ~50fps 拖到 27fps（实测；耗时分解见台账 §6/B4）
 - 相机是**独占资源**：同机同时只能有一个程序开着相机（先退旧进程再起新进程），端口 8080 同理
+- **逐框对拍**（校验 C++ 解码与 python 参考一致）：先在 Jetson 收集 `./build/yolo_test 图... > cpp.txt 2>&1`，再在装了 onnxruntime 的机器上 `MODEL=... python3 tools/cross_check.py cpp.txt 图...`（差异 ≤0.03 阈值边缘自动判定；2026-10-09 通过：7 图 Δconf≤0.001、角点≤0.6px，1 例阈值边缘）
 
 ## 文档
 

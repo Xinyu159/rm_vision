@@ -100,6 +100,11 @@
   - 同济为什么不卡这一步：① 海康相机直出 BGR8（相机端去马赛克，`hikrobot.cpp` 设 `PixelType_Gvsp_BGR8_Packed`）；② OpenVINO 直接吃 u8 NHWC 零拷贝（`ov::Tensor(u8,{1,640,640,3}, input.data)`），主机侧只剩一次 resize 且直写输入 ROI。我们的相机只有 Bayer 输出、TRT 输入是 fp16 planar NCHW，这两步转换省不掉
   - 与同济的差异（有意为之）：① 未建 `detector.{hpp,cpp}`——同济那是传统视觉检测器（Classifier+PCA 角点矫正），本阶段用不到，`use_traditional` 到传统法阶段再补；② 未做软件 ROI（相机 ROI 已覆盖，且会改变坐标映射）；③ 后端 OpenVINO→TRT
 - 踩坑（检测链路）：**JPEG 编码（~15ms/帧）绝不能放主循环**——实测放主循环把管线从 ~50fps 拖到 27fps，已改为服务线程编码+推送；**离线测耗时必须先预热**（首次 detect 含 CUDA 上下文/OpenCV 线程池懒初始化，100ms+），且别在推流运行中测（争抢让预处理 6.5ms→41ms）
+- **Jetson 特色预处理路线（2026-10-09 定案）**：CPU 预处理 2.7ms 已低于推理 7.2ms，继续压它收益递减；Jetson 的正路是利用 **iGPU 与 CPU 共享 DRAM**：
+  - ① **双缓冲 + 流重叠（首选，随线程模型一起做）**：detect 拆成"提交（预处理+enqueue）/收取（同步+解码）"两段，预处理第 N+1 帧时 GPU 正推第 N 帧 → 2.7ms 被推理掩盖，管线从 ≈92fps 提到**推理上限 ≈120fps**；输入缓冲同时换 `cudaHostAllocMapped` + `cudaHostGetDevicePointer`（TRT 输入直接用映射指针，H2D 的 0.19ms 和 2.4MB 往返一并省掉）——iGPU 上这是零拷贝标准姿势，dGPU 才需要真拷贝
+  - ② **全硬件通路（备选，触发条件 = CPU 被 PnP/EKF 抢占）**：VPI 2.4（`/opt/nvidia/vpi2`）的 VIC 单元解马赛克+缩放直写设备缓冲，GPU 侧打包 fp16 平面 → CPU 近零参与；代价是数值路径改变，需用 `tools/cross_check.py` 做检测级对拍验证（NPP `nppiCFAToRGB` 同理，但 VPI 在 Jetson 上更顺）
+  - ③ **预览旁路（可选）**：MJPEG 的 15ms/帧 JPEG 编码可换 nvJPEG 硬件编码，只影响预览不影响检测
+  - ④ **不做**：DLA 卸载（数值差异 + 复杂度，B6 低优先级维持）、半幅 binning（PSNR 32.7 换 0.5ms，已否决）、NPP 直用（被 VPI 覆盖）
 - 踩坑：`cv::CommandLineParser` 的参数**必须用 `=` 传值**（`--exposure=4000`）；写 `--exposure 4000` 会把 4000 当成位置参数（配置路径），camera_test 里已加防呆提示
 - 运维坑（已踩）：`pkill -f` 会匹配到自己 ssh 脚本正文导致自杀 → 用 `pkill -x` 或字符串拼接；TRT 建引擎必须限 `--workspace` + 先腾内存
 
@@ -124,7 +129,7 @@
 
 **A. 相机**
 1. ~~用 SDK 直读本机真实参数~~ ✅ / ~~跑流实测~~ ✅ 均已完成（2026-10-08）：210fps 硬上限、曝光阈值 4.7ms、限帧/ROI/抽行全部实测（表见 §5）
-2. Bayer→RGB 转换放在哪：**相机不直出 RGB（只有 BayerRG8/10），转换必做** —— 链路已打通、解码常量实测定案（RGGB → OpenCV `COLOR_BayerBG2BGR`，见 §5）；CPU 侧预处理已优化到 **2.7ms**（2026-10-09，拆解见 §6），不再是瓶颈 → **结论：暂不搬 GPU**（NPP/VPI 方案备用；真要做时顺带能实现"GPU 缓冲直连 TRT 输入、零 H2D"）
+2. Bayer→RGB 转换放在哪：**相机不直出 RGB（只有 BayerRG8/10），转换必做** —— 链路已打通、解码常量实测定案（RGGB → OpenCV `COLOR_BayerBG2BGR`，见 §5）；CPU 侧预处理已优化到 **2.7ms**（2026-10-09，拆解见 §6），不再是瓶颈 → **结论：暂不搬 GPU，改走流水线**（双缓冲 + 流重叠把预处理藏到推理背后，方案见 §6 末尾"Jetson 特色预处理路线"）
 3. 相机时间戳质量（SDK 帧时间戳 vs 主机时间）→ 决定 EKF 的时间基准（当前驱动用的是主机 `steady_clock`@DQBuf；相机帧自带 `nTimestamp`，SDK 已拿到但未接入对齐）
 
 **B. 性能（决定 89/180 能否落地）**
@@ -140,7 +145,7 @@
    | **检测合计** | **≈11** | — | ≈92fps 管线能力；带浏览器推流的完整循环实测 ~65fps；**瓶颈已转到推理**（7.2ms，锁频上限 164fps） |
 
    PnP/EKF 耗时等解算阶段补。
-   **遗留**：与 `tools/verify_0526.py` 的逐框数值对拍未做（OpenCV dnn 读不了 fp16 的 ONNX、Jetson 上无 onnxruntime/onnx）——替代证据：engine 绑定与 python-TRT 探测一致（images fp16 → output fp32）、几何自洽（rect_err 0.03~0.08、角点序一致）、置信度与验证报告吻合（0.96、f600 检出 four）。打通需装 onnxruntime 或 onnx（由用户下载）
+   **逐框数值对拍 ✅ 已做（2026-10-09，`tools/cross_check.py`）**：C++(TRT) 与 python(onnxruntime) 跑同一份 0526 → 7 张图 3 个检出全部配对，Δconf ≤ 0.001、角点最大差 ≤ 0.6px、颜色/编号全一致；1 例阈值边缘（demo_2：C++ 0.504 vs python 低阈值复跑 0.495，跨 0.50 卡线，属浮点路径差异非解码错，脚本自动判定）。对拍在**笔记本**跑（onnxruntime 已有，**无需另装**）：Jetson `yolo_test` 收集 stdout → 对拍机 `MODEL=... python3 tools/cross_check.py cpp.txt 图...`
 5. 传统视觉 180fps 可行性：灯条法原型在 NX CPU 上能否 <5ms；"传统 + NN 双频混合"方案是否成立
 6. DLA（双核 NVDLA）能否卸载 0526 部分算子、收益多少 —— 低优先级
 
