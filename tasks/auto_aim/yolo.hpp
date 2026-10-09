@@ -24,7 +24,14 @@ struct YoloConfig
   std::string engine_path = "models/0526_fp16.engine";  // 相对仓库根（与 yaml 同约定）
   double min_confidence = 0.50;      // objectness 阈值（实测验证值；同济常量 0.7 会漏检）
   double nms_threshold = 0.45;       // 同济用 0.3
-  double big_ratio_threshold = 1.4;  // 长/宽比 ≥ 此值判大装甲（Bs/Bb 由编号直接给出）
+  // 场上有无大装甲板：今年规则无大板 → false（所有板按小处理，仅 Bb 例外），型别
+  // 误判风险为零；练车遇旧大板时置 true，恢复下面的几何判定
+  bool has_big_armor = false;
+  // 大/小装甲判定比值阈值（仅 has_big_armor=true 时用）：正对小 2.41 / 大 4.11
+  // （max 上下边 ÷ 两灯条平均长），阈值取中点；斜视由灯条差折算后再比
+  // （细则见 armor.cpp）。Bs/Bb 由编号直接给出
+  double big_ratio_threshold = 3.3;
+  double fx = 0;  // 焦距（px，读 yaml 顶层 camera_matrix[0]）；>0 时型别判定启用斜视折算
 };
 
 YoloConfig yolo_config_from_yaml(const std::string & config_path);

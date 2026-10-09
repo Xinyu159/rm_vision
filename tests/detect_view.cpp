@@ -6,6 +6,7 @@
 //   ./detect_view --serve=8080 --scale=0.75    # 浏览器开 http://10.42.0.80:8080/
 //   ./detect_view                              # 窗口模式
 //   ./detect_view --conf=0.6 --nms=0.4         # 覆盖 yaml 里的 yolo 阈值
+//   ./detect_view --serve=8080 --solve=1       # 叠加解算：型别 + 距离 + yaw
 // 快捷键（窗口模式）：q / ESC 退出；s 存干净图；w 重做一次白平衡
 
 #include <csignal>
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <deque>
 #include <list>
+#include <memory>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <thread>
@@ -23,6 +25,7 @@
 
 #include "cli_common.hpp"
 #include "io/galaxy/galaxy.hpp"
+#include "tasks/auto_aim/solver.hpp"
 #include "tasks/auto_aim/yolo.hpp"
 #include "tools/exiter.hpp"
 #include "tools/logger.hpp"
@@ -41,7 +44,8 @@ const cv::String keys =
   "{scale         | 1.0  | 显示缩放 0.1~1.0（画面小一圈、省 CPU）}"
   "{serve         | 0    | >0 时不开窗口，改在该端口提供 MJPEG 网页流}"
   "{conf c        | 0    | objectness 阈值（>0 覆盖 yaml）}"
-  "{nms n         | 0    | NMS 阈值（>0 覆盖 yaml）}";
+  "{nms n         | 0    | NMS 阈值（>0 覆盖 yaml）}"
+  "{solve         | 0    | 1=叠加解算（型别/距离/yaw，约 +1.4ms/块）}";
 
 namespace
 {
@@ -66,7 +70,8 @@ struct Stat
   }
 };
 
-/// 画四点框 + 角点 + 标签（坐标为原图坐标，需按显示缩放换算）
+/// 画四点框 + 角点 + 标签（坐标为原图坐标，需按显示缩放换算）。
+/// solved 的块（--solve=1）额外标距离与 yaw（yaw 相对相机即世界系，无 IMU 时两者相同）
 void draw_armors(cv::Mat & img, const std::list<auto_aim::Armor> & armors, double scale)
 {
   for (const auto & a : armors) {
@@ -78,9 +83,11 @@ void draw_armors(cv::Mat & img, const std::list<auto_aim::Armor> & armors, doubl
     cv::polylines(img, poly, true, {0, 255, 0}, 2);
     for (const auto & p : poly) cv::circle(img, p, 5, {0, 0, 255}, -1);
 
-    const std::string label = cv::format(
+    std::string label = cv::format(
       "%s %s %.2f %s", auto_aim::COLORS[a.color].c_str(), auto_aim::ARMOR_NAMES[a.name].c_str(),
       a.confidence, auto_aim::ARMOR_TYPES[a.type].c_str());
+    if (a.solved)
+      label += cv::format("  d=%.2fm yaw=%+.1f", a.ypd_in_world[2], a.ypr_in_world[0] * 180 / CV_PI);
     cv::Point org = poly[0] + cv::Point(-40, -14);
     org.x = std::max(org.x, 2);
     org.y = std::max(org.y, 20);
@@ -91,7 +98,7 @@ void draw_armors(cv::Mat & img, const std::list<auto_aim::Armor> & armors, doubl
 void draw_overlay(
   cv::Mat & img, double fps, double fps_avg, double cam_hz, double lat_ms, uint64_t n,
   std::size_t det_count, const auto_aim::YOLO::Timings & timings, const auto_aim::YoloConfig & cfg,
-  const io::GalaxyConfig & cam)
+  const io::GalaxyConfig & cam, double solve_ms)
 {
   const cv::Rect box(0, 0, 900, 150);
   cv::Mat roi = img(box);
@@ -110,12 +117,12 @@ void draw_overlay(
     img, cv::format("pre %.2f  infer %.2f  post %.2f  total %.2f ms", timings.preprocess,
                     timings.inference, timings.postprocess, timings.total()),
     {12, 80}, cv::FONT_HERSHEY_SIMPLEX, 0.75, yellow, 2);
-  cv::putText(
-    img,
-    cv::format(
-      "%dx%d  lat %.1fms  frame #%llu  conf %.2f nms %.2f", cam.roi_width, cam.roi_height, lat_ms,
-      (unsigned long long)n, cfg.min_confidence, cfg.nms_threshold),
-    {12, 113}, cv::FONT_HERSHEY_SIMPLEX, 0.7, yellow, 2);
+  std::string info = cv::format(
+    "%dx%d  lat %.1fms  frame #%llu  conf %.2f nms %.2f", cam.roi_width, cam.roi_height, lat_ms,
+    (unsigned long long)n, cfg.min_confidence, cfg.nms_threshold);
+  info += cfg.has_big_armor ? "  big:geom" : "  big:none";
+  if (solve_ms >= 0) info += cv::format("  solve %.2fms", solve_ms);
+  cv::putText(img, info, {12, 113}, cv::FONT_HERSHEY_SIMPLEX, 0.7, yellow, 2);
 
   std::string bottom =
     cam.exposure_us > 0 ? cv::format("exp %.0fus", cam.exposure_us) : "exp camera-default";
@@ -161,6 +168,20 @@ int main(int argc, char ** argv)
     return 1;
   }
 
+  // 解算默认关：单块 p50≈1.4ms，超过台账预算（0.3ms），叠不叠由 --solve=1 决定
+  const bool solve_on = cli.get<int>("solve") > 0;
+  std::unique_ptr<auto_aim::Solver> solver;
+  if (solve_on) {
+    try {
+      solver.reset(new auto_aim::Solver(auto_aim::solver_config_from_yaml(config_path)));
+    } catch (const std::exception & e) {
+      tools::logger()->error("[detect_view] 载入解算失败: {}", e.what());
+      return 1;
+    }
+  } else {
+    tools::logger()->info("[detect_view] 解算未开（--solve=1 可叠加 型别/距离/yaw）");
+  }
+
   tools::Exiter exiter;
   io::Galaxy camera(camera_config);
 
@@ -185,7 +206,7 @@ int main(int argc, char ** argv)
   }
 
   std::deque<std::chrono::steady_clock::time_point> win;
-  Stat st_pre, st_infer, st_post, st_read, st_draw, st_fps;
+  Stat st_pre, st_infer, st_post, st_read, st_draw, st_solve, st_fps;
   bool ever_visible = false;  // 窗口是否曾经可见过（区分启动竞态与真的被关掉）
   uint64_t n = 0;
   std::size_t det_count = 0;
@@ -216,6 +237,14 @@ int main(int argc, char ** argv)
     st_pre.push(timings.preprocess);
     st_infer.push(timings.inference);
     st_post.push(timings.postprocess);
+    if (solver) {  // 解算失败不改 a（solved 仍 false），标签就不带距离
+      double solve_ms = 0;
+      for (auto & a : armors) {
+        solver->solve(a);
+        solve_ms += solver->last_timings().total();
+      }
+      st_solve.push(solve_ms);
+    }
 
     n++;
     win.push_back(now);
@@ -239,7 +268,9 @@ int main(int argc, char ** argv)
       else
         disp = bgr;
       draw_armors(disp, armors, scale);
-      draw_overlay(disp, fps, fps_avg, cam_hz, lat_ms, n, det_count, timings, yolo_config, camera_config);
+      draw_overlay(
+        disp, fps, fps_avg, cam_hz, lat_ms, n, det_count, timings, yolo_config, camera_config,
+        solver ? st_solve.pct(0.5) : -1.0);
 
       if (serve_mode) {
         streamer.publish(disp);  // JPEG 编码在服务线程做（见 tools/mjpeg_server.hpp 注释）
@@ -277,10 +308,11 @@ int main(int argc, char ** argv)
       tools::logger()->info(
         "[detect_view] fps={:.1f} 相机自报={:.1f}Hz 延迟={:.1f}ms 帧数={} 检出={} | "
         "读帧 p50={:.2f}/p99={:.2f} 预处理 p50={:.2f}/p99={:.2f} 推理 p50={:.2f}/p99={:.2f} "
-        "解码 p50={:.2f}/p99={:.2f} 绘制 p50={:.2f}/p99={:.2f} ms",
+        "解码 p50={:.2f}/p99={:.2f} 解算 p50={:.3f}/p99={:.3f} 绘制 p50={:.2f}/p99={:.2f} ms",
         fps, cam_hz, lat_ms, n, det_count, st_read.pct(0.5), st_read.pct(0.99), st_pre.pct(0.5),
         st_pre.pct(0.99), st_infer.pct(0.5), st_infer.pct(0.99), st_post.pct(0.5),
-        st_post.pct(0.99), st_draw.pct(0.5), st_draw.pct(0.99));
+        st_post.pct(0.99), st_solve.pct(0.5), st_solve.pct(0.99), st_draw.pct(0.5),
+        st_draw.pct(0.99));
       t_last_log = now;
     }
   }
@@ -291,11 +323,11 @@ int main(int argc, char ** argv)
     tools::logger()->info(
       "[detect_view] 汇总：运行 {:.1f}s 帧数 {} 平均fps={:.1f} | 读帧 p50={:.2f}/p99={:.2f} "
       "预处理 p50={:.2f}/p99={:.2f} 推理 p50={:.2f}/p99={:.2f} 解码 p50={:.2f}/p99={:.2f} "
-      "绘制 p50={:.2f}/p99={:.2f} ms",
+      "解算 p50={:.3f}/p99={:.3f} 绘制 p50={:.2f}/p99={:.2f} ms",
       tools::delta_time(t_end, t0), n, n / std::max(0.001, tools::delta_time(t_end, t0)),
       st_read.pct(0.5), st_read.pct(0.99), st_pre.pct(0.5), st_pre.pct(0.99), st_infer.pct(0.5),
-      st_infer.pct(0.99), st_post.pct(0.5), st_post.pct(0.99), st_draw.pct(0.5),
-      st_draw.pct(0.99));
+      st_infer.pct(0.99), st_post.pct(0.5), st_post.pct(0.99), st_solve.pct(0.5),
+      st_solve.pct(0.99), st_draw.pct(0.5), st_draw.pct(0.99));
   }
 
   quit = true;

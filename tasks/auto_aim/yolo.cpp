@@ -208,10 +208,11 @@ YOLO::YOLO(const YoloConfig & config) : config_(config), impl_(new Impl)
 
   tools::logger()->info(
     "[yolo] engine 载入完成: {}  输入 {}x{} {}  输出 {}x{} {}  conf≥{:.2f} nms {:.2f} "
-    "big_ratio {:.2f}",
+    "big_armor {} big_ratio {:.2f} fx {:.1f}",
     config_.engine_path, impl_->input_w, impl_->input_h, dtype_name(impl_->in_dtype),
     impl_->out_rows, impl_->out_cols, dtype_name(impl_->out_dtype), config_.min_confidence,
-    config_.nms_threshold, config_.big_ratio_threshold);
+    config_.nms_threshold, config_.has_big_armor ? "有" : "无", config_.big_ratio_threshold,
+    config_.fx);
 }
 
 YOLO::~YOLO() = default;
@@ -334,7 +335,9 @@ std::list<Armor> YOLO::detect(const cv::Mat & img)
       boxes, scores, (float)config_.min_confidence, (float)config_.nms_threshold, keep);
     for (int k : keep) {
       const auto & c = cands[k];
-      Armor armor(c.color_id, c.num_id, c.conf, boxes[k], c.points, config_.big_ratio_threshold);
+      Armor armor(
+        c.color_id, c.num_id, c.conf, boxes[k], c.points, config_.big_ratio_threshold, config_.fx,
+        config_.has_big_armor);
       if (armor.name == ArmorName::not_armor) continue;  // 对齐同济 check_name
       armor.center_norm = {armor.center.x / img.cols, armor.center.y / img.rows};
       armors.push_back(std::move(armor));
@@ -358,6 +361,10 @@ YoloConfig yolo_config_from_yaml(const std::string & config_path)
   config.nms_threshold = tools::read_or<double>(y, "nms_threshold", config.nms_threshold);
   config.big_ratio_threshold =
     tools::read_or<double>(y, "big_ratio_threshold", config.big_ratio_threshold);
+  config.has_big_armor = tools::read_or<bool>(y, "has_big_armor", config.has_big_armor);
+  // 焦距（像素）取顶层内参的 camera_matrix[0]（行主序 fx）——型别判定用它做斜视折算
+  const auto camera_matrix = tools::read_or<std::vector<double>>(yaml, "camera_matrix", {});
+  if (camera_matrix.size() == 9) config.fx = camera_matrix[0];
   return config;
 }
 

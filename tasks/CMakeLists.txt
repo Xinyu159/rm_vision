@@ -1,10 +1,11 @@
-# 任务层（检测/解算/跟踪/决策）。当前只有 auto_aim/ 的检测部分（armor + yolo）
+# 任务层（检测/解算/跟踪/决策）。当前只有 auto_aim/ 的检测 + 解算（armor + yolo + solver）
 find_library(NVINFER_LIB NAMES nvinfer REQUIRED)
 find_library(CUDART_LIB NAMES cudart PATHS /usr/local/cuda/lib64 REQUIRED)
 
 add_library(auto_aim STATIC
     auto_aim/armor.cpp
     auto_aim/yolo.cpp
+    auto_aim/solver.cpp
 )
 
 # tasks/ 本身作为包含目录：模块内可写 #include "auto_aim/yolo.hpp"
