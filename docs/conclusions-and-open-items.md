@@ -2,9 +2,9 @@
 
 > **用途**：上半部分是**已确认、可作为后续开发依据的结论**，下半部分是**必须弄清、否则会返工的问题**。
 > 维护约定：有了新结论，就从"待弄清"挪到"已确认"；被推翻的结论写清纠正理由后并入"已纠正的误区"。
-> 最后更新：2026-10-10
+> 最后更新：2026-10-11
 
-**一句话现状**：检测 ✅（单帧 ≈11ms、92fps 管线）+ **解算 ✅**（PnP + yaw 搜索，锁频态单块 p99 0.253ms）+ 型别判定修复（今年无大板 → 全部按小处理，误判为零）；下一步 = **跟踪（EKF）** 开发 + **真板精度校验**（需用户配合，清单见 `docs/next-steps.md`）。
+**一句话现状**：检测 ✅（单帧 ≈11ms、92fps 管线）+ **解算 ✅**（PnP + yaw 搜索，锁频态单块 p99 0.253ms）+ 型别判定修复（今年无大板 → 全部按小处理，误判为零）+ **串口/标定/手眼工具 ✅**（'SP' 帧 io/gimbal、capture 双版、手眼两程序、pnp_view 检查视图——2026-10-11，实车 live 联调与手眼采集待板接通）；下一步 = **实车手眼标定 → PnP 检查** + **跟踪（EKF）** 开发 + 真板精度校验（清单见 `docs/next-steps.md`）。
 
 ---
 
@@ -113,7 +113,14 @@
   - 性能（锁频态，2000 次单块）：**合计 p50 0.166 / p99 0.253 ms**（PnP+级联 0.100/0.181 + yaw 搜索 0.064/0.120），过台账判据（单块 p99 ≤0.3ms）；两块 ≈×2（p99 ≈0.5ms）。**yaw 搜索 140 次 `cv::projectPoints` 原 ≈0.93ms → 手写等价投影 ≈0.06ms**（免掉每次的 Rodrigues + 缓冲分配；畸变系数非 0/4/5 参或内参带 skew 时自动退回 OpenCV 路径，正确性优先）
 - **型别判定修复（2026-10-10，task #35）**：旧规则（max(上下边)/max(灯条) ≥1.4）在**正视**时小装甲板也算出 2.41 > 1.4 → 被判成"大"→ yaw 搜索按大板几何找最优 → 假 yaw +40°（真图 f0060/f0300 实测踩到）。修复两条腿：① **今年规则无大板 → `has_big_armor: false` 全按小处理（Bb 例外），误判风险为零**；② 置 `true`（练车/旧场地）时走新几何判定：**均值比**（max(上下边)/两灯条**平均**长；正视小 2.41/大 4.11，阈值 3.3 取中点）+ 斜视时先用灯条长度差折算 yaw（与型别无关的量）再比。实测：小型别组扫描 8/8 组零误判（旧规则 11/17）；合成噪声 σ=1px 时 1m 处误升 0.8%（σ=1.5 → 4.1%）、≥3m 全零
 - 真图残差观察（开放项，待真板定性）：demo.avi 的 f0060/f0600 重投影残差地板 8~21px（`--armor_pitch=0` 不敏感）→ 疑关键点定义/贴点偏差（模型四点 vs 物点在灯条中心），等真板对着量，见 `docs/next-steps.md` A2/B2
+- **串口落地（2026-10-11，C1）**：`io/gimbal`（同济 'SP' 帧：43B 收 / 29B 发、CRC16 表驱动 poly 0x1021 反射 init 0xffff、帧内 [低,高]）+ `io/serial`（vendored wjwwood serial，MIT）+ `io::Gimbal`（`q(t)` 按相机时间戳插值、断链会阻塞——同济同语义）+ `tests/serial_test`（`--mode=loop` 离线 15 项全绿：帧长/偏移编译期断言、CRC 往返、单字节篡改 43/43+29/29 全拒；`--mode=live` 实读，返回码 0/3/4）+ `docs/serial-protocol.md`（给电控的逐字节规格书 + 样例帧 hex）。偏差仅三处并注释（yaml 加 baud_rate/first_q_timeout_s、打开失败 throw、首帧超时先 quit_/join/close 再抛）。**实车 live 联调待电控板接通 ttyACM0**
+- **标定采集与手眼落地（2026-10-11，C2）**：`calibration/capture`（图 + 四元数成对存盘；终端 stdin / 浏览器控制台（`--serve=PORT`，Save/Auto/Quit/状态）/ 窗口三控制同时可用）+ `calibrate_handeye`（定板，TSAI）+ `calibrate_robotworld_handeye`（机器人-世界，今日主用；输出含相机同理想安装偏角/板距离/板偏角）+ `configs/calibration.yaml`（棋盘格 11×8 方格 30mm → 内角点 10×7，语义注释 + 第一张实拍识别成功即自证）+ `tools/control_server.hpp`（浏览器控制台，每连接一线程）+ `tools/fs_tools.hpp`
+  - **识别变体实测（Jetson NX 锁频，1280×1024）**：经典 `findChessboardCorners`（自适应阈值）无板时 **4.3s/张**（曾把 capture 主循环拖到 0.2fps！）；SB 半分辨率 **0.13s**、SB 全分辨率 0.44s、SB 全 + EXHAUSTIVE 0.40s、EXH|ACC 0.96s → **capture 用后台线程 + 半分辨率 SB（主循环实测 99fps，检测零阻塞）**；**离线手眼程序用全分辨率 SB + EXHAUSTIVE|ACCURACY**（~1s/张，离线可接受，亚像素精度）
+  - capture 实测（无板，`--no-q --serve=8090`）：/status 真 JSON（fps 99.4，10ms 曝光封顶）、/save、/auto 1s、/stream MJPEG、/quit 干净退出且相机释放（日志 "Galaxy 已关闭"）
+- **PnP 检查视图（2026-10-11，C3）**：`tests/pnp_view`——相机 → YOLO → Solver 与实车部署同一条链（无 sleep 不降分辨率），绘制 + 推流旁路按 ~30fps；画面叠加（全英文 ASCII）：检测框（绿）+ **位姿重投影框（青）** + `d/yaw/pitch/err`（重投影残差 px）+ 阶段耗时 + **EXTR CALIB/NOMINAL 外参状态**（占位值红字告警）；`--serve` 浏览器控制台（Save=存标注快照 / Quit / 状态 0.5s 刷新）。实测（无板）：fps≈79（推理 8.2ms 串行 + 绘制 4ms/33ms）、lat ~2.5ms、页面上传/快照/退出全通
 - 踩坑：`cv::CommandLineParser` 的参数**必须用 `=` 传值**（`--exposure=4000`）；写 `--exposure 4000` 会把 4000 当成位置参数（配置路径），camera_test 里已加防呆提示
+- 踩坑（CommandLineParser 两个静默坑，2026-10-11 踩齐）：① key 描述里**不能有 `{}`**（被当成区间分隔符 → `--help` 抛 -212）；② 裸 `--flag` 存成字符串 "true"，`get<int>` 解析失败**静默变 0**（`--no-q` 不生效）→ 统一用 `flag_on()` 按字符串判
+- 踩坑（Eigen 版本）：JetPack 5.1.4 的 **Eigen 3.3 不支持嵌套初始化列表**（`Matrix3d R{{a,b,c},...}` 编译错）→ 用逗号初始化 `R << a, b, c, ...`
 - 运维坑（已踩）：`pkill -f` 会匹配到自己 ssh 脚本正文导致自杀 → 用 `pkill -x` 或字符串拼接；TRT 建引擎必须限 `--workspace` + 先腾内存
 
 ### 7. 已纠正的误区（别再犯）
@@ -167,10 +174,10 @@
 10. 只打步兵（3V3）→ 后处理类别裁剪策略（丢弃非目标类别，阈值/NMS 是否需相应调整）—— 当前检测层不裁类别（只丢 not_armor），全部类别进 NMS；裁剪到瞄准闭环时定，先留全类别方便观察
 
 **D. 后续阶段（未开始）**
-11. 下位机通信协议（串口/网口 + 帧格式）与裁判系统数据接入
+11. ~~下位机通信协议（串口/网口 + 帧格式）~~ ✅ **已完成（2026-10-11，C1）**：'SP' 帧（同济协议）+ CRC16 + io::Gimbal，规格书 `docs/serial-protocol.md`；serial_test 离线全绿。**实车 live 联调（板接 ttyACM0 后 `serial_test --mode=live --send=1`）待做**；裁判系统数据接入仍未定
 12. 部署化：开机脚本（nvpmodel + jetson_clocks）、进程守护（systemd）、engine 构建脚本化（换设备/升级 TRT 时一键重建）
-13. **真板精度校验（需用户配合，随时可做，独立于开发）**：量板尺寸（灯条中心距 135? / 灯条长 56?）→ 卷尺在 1/2/3m 校距 → （可选）已知角度校 yaw → 静止连拍测关键点 σ（喂 tracker 的 R 初值）——做法与话术清单见 `docs/next-steps.md`
-14. 手眼标定（相机上云台后）：`R_camera2gimbal` / `t_camera2gimbal` 真值覆盖 yaml 占位值 → world 系绝对姿态才可信；也是 pitch 假设校验与 f0060/f0600 残差地板定性的前置
+13. **真板精度校验（需用户配合，随时可做，独立于开发）**：量板尺寸（灯条中心距 135? / 灯条长 56?）→ 卷尺在 1/2/3m 校距 → （可选）已知角度校 yaw → 静止连拍测关键点 σ（喂 tracker 的 R 初值）——做法与话术清单见 `docs/next-steps.md`。**卷尺校距现在可用 `pnp_view`（浏览器看 d= 读数 + 重投影对齐 + err px）**
+14. 手眼标定（相机上云台后）：**工具已就绪（2026-10-11，C2/C3）**——`capture --serve` 采图 → `calibrate_robotworld_handeye` 解算 → `R_camera2gimbal`/`t_camera2gimbal` 覆盖 `configs/standard3.yaml` → `pnp_view` 应显示 EXTR CALIB；world 系绝对姿态才可信；也是 pitch 假设校验与 f0060/f0600 残差地板定性的前置
 
 ---
 
@@ -179,7 +186,8 @@
 1. ~~相机参数摸底 + 跑流实测~~ ✅ 已完成（2026-10-08；A3 相机时间戳待接）
 2. ~~**C++ 最小闭环**（检测）~~ ✅ 已完成（2026-10-08）：`tasks/auto_aim/`（armor + yolo，TensorRT FP16）+ `tests/detect_view` + `tests/yolo_test`；耗时分解见 二-B4、落地详情见 §6
 3. ~~**解算（PnP）**~~ ✅ 已完成（2026-10-10）：`solver.{hpp,cpp}` + `tests/solver_test` + `detect_view --solve=1`；合成门/真图/投影等价性全过，锁频态 p50 0.166 / p99 0.253ms（单块）；型别误判修复（§6）
-4. **跟踪（tracker / EKF）** ← 下一步开发主任务：状态量对齐同济 `tasks/auto_aim/tracker`（位置/速度 + yaw/角速度），观测 = PnP 位姿；R 初值等 A4 实测 σ、Q/门限用合成轨迹调；里程碑 = 合成轨迹收敛 + demo.avi 连续帧跟踪不丢
-5. **真板精度校验（需用户配合，可与 4 并行）**：量尺寸（135/56mm）→ 卷尺 1/2/3m 校距 →（可选）已知角度校 yaw → 静止连拍测 σ →（上车后）手眼标定（清单与做法：`docs/next-steps.md`）
-6. **传统法原型**验证 180fps 可行性（B5）
-7. 瞄准闭环（aimer / shooter，依赖手眼外参真值与弹速）与部署化（D11/D12）
+4. ~~**串口 + 标定/手眼工具**~~ ✅ 已完成（2026-10-11，C1/C2/C3）：io/gimbal（SP 帧）+ capture 双版 + 手眼两程序 + pnp_view（详见 §6）；**实车联调与手眼采集待板接通**（用户配合）
+5. **跟踪（tracker / EKF）** ← 下一步开发主任务：状态量对齐同济 `tasks/auto_aim/tracker`（位置/速度 + yaw/角速度），观测 = PnP 位姿；R 初值等 A4 实测 σ、Q/门限用合成轨迹调；里程碑 = 合成轨迹收敛 + demo.avi 连续帧跟踪不丢
+6. **真板精度校验（需用户配合，可与 5 并行）**：量尺寸（135/56mm）→ 卷尺 1/2/3m 校距（用 `pnp_view`）→（可选）已知角度校 yaw → 静止连拍测 σ →（上车后）手眼标定（清单与做法：`docs/next-steps.md`）
+7. **传统法原型**验证 180fps 可行性（B5）
+8. 瞄准闭环（aimer / shooter，依赖手眼外参真值与弹速）与部署化（D11/D12）

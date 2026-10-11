@@ -18,13 +18,13 @@ RoboMaster 视觉开发工作区（Jetson 平台，aarch64 / JetPack 5.1.4 / Ubu
 
 - `models/` — 检测模型本体入库，与代码版本对齐（`0526.onnx`，4.2MB）
 - `docs/` — 分析与验证文档
-- `io/` — 硬件 IO 层：`camera.hpp` 相机抽象 + `galaxy/` 大恒驱动（捕获线程 + 守护重连线程，容量 1 丢旧留新队列）
+- `io/` — 硬件 IO 层：`camera.hpp` 相机抽象 + `galaxy/` 大恒驱动（捕获线程 + 守护重连线程，容量 1 丢旧留新队列）；`gimbal/` 下位机（同济 'SP' 帧：43B 收 / 29B 发 + CRC16，`q(t)` 按相机时间戳插值）+ `serial/`（vendored wjwwood serial，MIT）
 - `tasks/` — 算法层：`auto_aim/` 自瞄（`armor` 装甲板数据结构（语义对齐同济）、`yolo` TensorRT 检测后端：预处理/推理/解码/NMS、`solver` PnP 位姿解算：IPPE → 外参级联 → yaw 精搜索）
-- `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml / mjpeg_server）+ 工具脚本（`gx_dump.py` 相机参数复读、`verify_0526.py` python 参考实现、`cross_check.py` C++↔python 逐框对拍）
-- `configs/` — 机器人配置（`standard3.yaml`：相机参数按实测写全 + 标定内参 + 解算键（外参占位/yaw 搜索中心/pitch 假设）+ `yolo:` 检测参数（含 `has_big_armor`））
+- `tools/` — C++ 通用件（logger / exiter / math_tools / thread_safe_queue / yaml / mjpeg_server / control_server 浏览器控制台 / crc / fs_tools / img_tools）+ 工具脚本（`gx_dump.py` 相机参数复读、`verify_0526.py` python 参考实现、`cross_check.py` C++↔python 逐框对拍）
+- `configs/` — 机器人配置（`standard3.yaml`：相机参数按实测写全 + 标定内参 + 解算键（外参占位/yaw 搜索中心/pitch 假设）+ `yolo:` 检测参数（含 `has_big_armor`）+ 串口块；`calibration.yaml`：标定采集/手眼专用（相机 + 棋盘格 + 内参 + 串口））
 - `src/` — 主程序（`standard.cpp` 空壳，随阶段推进长出检测/跟踪/决策）
-- `tests/` — 模块测试（`camera_test` 取流/帧率实测；`camera_view` 实时预览；`detect_view` 检测预览：相机→检测→画框→浏览器（`--solve=1` 叠加距离/yaw）；`yolo_test` 单图离线检测/耗时对拍；`solver_test` 解算离线测试：数学自检/合成真值/型别判定/投影等价性/真图/耗时/对拍导出）+ `cli_common.hpp` 公共命令行件
-- `calibration/` — 相机标定参数（内参 yaml + 标定记录表）
+- `tests/` — 模块测试（`camera_test` 取流/帧率实测；`camera_view` 实时预览；`detect_view` 检测预览：相机→检测→画框→浏览器（`--solve=1` 叠加距离/yaw）；`pnp_view` PnP 满帧率检查视图（重投影叠加 + err + 浏览器控制台）；`yolo_test` 单图离线检测/耗时对拍；`solver_test` 解算离线测试；`serial_test` 串口双模自检（`--mode=loop` 离线 15 项 + `--mode=live` 实读））+ `cli_common.hpp` 公共命令行件
+- `calibration/` — 相机标定参数（内参 yaml + 标定记录表）+ 标定工具程序（`capture` 采集：图 + 四元数成对存盘、终端/浏览器/窗口三控制；`calibrate_handeye` 定板手眼；`calibrate_robotworld_handeye` 机器人-世界手眼（今日主用））
 - `reference/` — 参考仓库（各自独立 git，本仓库不追踪，详见下节）
 
 ## 构建与运行
@@ -43,6 +43,12 @@ mkdir -p build && cd build && cmake .. && make -j4
 ./build/solver_test --mode=image docs/img/xxx.jpg --save=out.png   # 真图逐块解算 + 叠加图（绿=检出 红=重投影）
 ./build/solver_test --mode=bench                          # 解算耗时 p50/p99（默认 2000 次）
 ./build/solver_test --mode=proj                           # 投影快路径 vs cv::projectPoints 逐值等价性（改 solver 后回归）
+./build/serial_test --mode=loop                           # 串口离线自检（帧格式/CRC/队列语义，15 项全绿）
+./build/serial_test --mode=live --port=/dev/ttyACM0 --seconds=10 --send=1   # 下位机实读 + 周期发帧
+./build/capture --serve=8080                              # 标定采集（浏览器控制台：Save/Auto/Quit；下位机不在加 --no-q）
+./build/calibrate_robotworld_handeye                      # 手眼主程序（读 assets/img_with_q → stdout YAML）
+./build/calibrate_handeye                                 # 定板手眼（同输入，另有 --display=1 / --dump=DIR）
+./build/pnp_view --serve=8081                             # PnP 满帧率检查（重投影 + err + 外参状态；Save 存标注快照）
 ```
 
 - 依赖：OpenCV 4.5.4 / Eigen3 / yaml-cpp / spdlog / fmt + TensorRT/CUDA（JetPack 自带 nvinfer/cudart）+ 大恒 Galaxy ARM64 SDK（头文件路径见顶层 `CMakeLists.txt` 的 `GALAXY_INC`）
@@ -59,6 +65,7 @@ mkdir -p build && cd build && cmake .. && make -j4
 ## 文档
 
 - [0526 模型验证报告](docs/0526-model-verification.md) — 四点装甲板检测确认可用 + 与同济 Armor/YOLO 接口映射（第一步结论）
+- [串口协议规格书](docs/serial-protocol.md) — 给电控核对的逐字节规格（'SP' 帧 + CRC16 + 样例帧 hex）
 - [结论与待定事项](docs/conclusions-and-open-items.md) — 已确认结论台账 + 必须弄清的问题清单（传承用，持续更新）
 - [下一步计划](docs/next-steps.md) — 解算收口后的路线：用户任务清单（量尺寸/卷尺校距/手眼标定）+ 开发顺序（tracker → 瞄准）
 - [sp_vision_25 文件结构与线程架构](docs/sp-vision-25-structure-and-threads.md) — 实读版：三层结构 / 线程清单 / 同步原语 / 移植对照表
@@ -77,7 +84,7 @@ mkdir -p build && cd build && cmake .. && make -j4
 - **configs/**：按兵种 YAML（camera.yaml 含相机参数）；**assets/**：OpenVINO 模型；**calibration/**：相机/手眼标定工具源码；**tests/**：各模块测试程序
 - **依赖**：OpenCV、Eigen3、fmt、spdlog、yaml-cpp、nlohmann_json、OpenVINO 2024.6（auto_buff 另用 Ceres）
 
-**本工程落地时的改造点**：① ~~相机按 `io/camera.hpp` 抽象新增大恒实现~~ ✅ 已完成（`io/galaxy/`，Galaxy SDK C++，2026-10-08 编译 + 跑流实测通过）；② ~~模型链路换成 0526.onnx + TensorRT~~ ✅ 已完成（`tasks/auto_aim/yolo`，TRT FP16，检测闭环 2026-10-08 实测通过；与同济的差异：未做软件 ROI、传统检测器 `detector` 延后到传统法阶段）；③ ~~PnP 解算移植~~ ✅ 已完成（`tasks/auto_aim/solver`，2026-10-10；与同济差异：缺省外参用理论正装旋转而非单位阵、yaw 搜索中心可配、内循环手写等价投影，详见 `docs/conclusions-and-open-items.md` §6）；④ 下位机协议待定。
+**本工程落地时的改造点**：① ~~相机按 `io/camera.hpp` 抽象新增大恒实现~~ ✅ 已完成（`io/galaxy/`，Galaxy SDK C++，2026-10-08 编译 + 跑流实测通过）；② ~~模型链路换成 0526.onnx + TensorRT~~ ✅ 已完成（`tasks/auto_aim/yolo`，TRT FP16，检测闭环 2026-10-08 实测通过；与同济的差异：未做软件 ROI、传统检测器 `detector` 延后到传统法阶段）；③ ~~PnP 解算移植~~ ✅ 已完成（`tasks/auto_aim/solver`，2026-10-10；与同济差异：缺省外参用理论正装旋转而非单位阵、yaw 搜索中心可配、内循环手写等价投影，详见 `docs/conclusions-and-open-items.md` §6）；④ ~~下位机协议~~ ✅ 已完成（`io/gimbal` 走同济 'SP' 帧 + CRC16，规格书 `docs/serial-protocol.md`，2026-10-11；实车 live 联调待板接通）；⑤ ~~标定采集与手眼工具~~ ✅ 已完成（`calibration/` 三程序 + `pnp_view` 检查视图，2026-10-11）。
 
 ## 相机 SDK
 

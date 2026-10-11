@@ -50,6 +50,8 @@ struct ControlServer
   std::atomic<uint64_t> save_requests{0};   // 网页 Save → ++；主循环按"比上次见到的大"消费
   std::atomic<bool> quit_requested{false};  // 网页 Quit → true（主循环看到后收尾）
   std::atomic<int> auto_sec{0};             // 自动存图间隔秒（0=关；网页 /auto?sec=N 设置）
+  bool show_auto = true;                    // 网页是否显示 Auto 按钮（无"自动存图"语义的工具置 false）
+
 
   void set_status(const std::string & json)
   {
@@ -84,27 +86,32 @@ inline void send_all_close(
 }
 
 /// 控制页（HTML 是浏览器渲染，用 UTF-8 没问题；画面内叠加才必须 ASCII）
-inline std::string control_page(const std::string & title)
+inline std::string control_page(const std::string & title, bool show_auto = true)
 {
-  return std::string("<!doctype html><html><head><meta charset=\"utf-8\"><title>") + title +
-         "</title><style>body{font-family:sans-serif;background:#111;color:#eee;margin:16px}"
-         "button{font-size:15px;padding:8px 14px;margin:0 6px 8px 0;cursor:pointer}"
-         "#st{white-space:pre-wrap;font-family:monospace;background:#000;padding:8px;"
-         "border:1px solid #444;max-width:900px}</style></head><body><h2>" +
-         title +
-         "</h2><div><img src=\"/stream\" style=\"max-width:100%;border:1px solid #444\"></div>"
-         "<p><button onclick=\"fetch('/save')\">Save (s)</button>"
-         "<button onclick=\"fetch('/auto?sec=0')\">Auto OFF</button>"
-         "<button onclick=\"fetch('/auto?sec=2')\">Auto 2s</button>"
-         "<button onclick=\"fetch('/auto?sec=5')\">Auto 5s</button>"
-         "<button onclick=\"fetch('/quit')\">Quit (q)</button></p>"
-         "<pre id=\"st\">connecting...</pre>"
-         "<script>document.addEventListener('keydown',function(e){"
-         "if(e.key=='s')fetch('/save');if(e.key=='q')fetch('/quit')});"
-         "setInterval(function(){fetch('/status').then(function(r){return r.text()})"
-         ".then(function(t){document.getElementById('st').textContent=t})"
-         ".catch(function(e){document.getElementById('st').textContent='server gone'})},1000);"
-         "</script></body></html>";
+  std::string html =
+    std::string("<!doctype html><html><head><meta charset=\"utf-8\"><title>") + title +
+    "</title><style>body{font-family:sans-serif;background:#111;color:#eee;margin:16px}"
+    "button{font-size:15px;padding:8px 14px;margin:0 6px 8px 0;cursor:pointer}"
+    "#st{white-space:pre-wrap;font-family:monospace;background:#000;padding:8px;"
+    "border:1px solid #444;max-width:900px}</style></head><body><h2>" +
+    title +
+    "</h2><div><img src=\"/stream\" style=\"max-width:100%;border:1px solid #444\"></div>"
+    "<p><button onclick=\"fetch('/save')\">Save (s)</button>";
+  if (show_auto)
+    html +=
+      "<button onclick=\"fetch('/auto?sec=0')\">Auto OFF</button>"
+      "<button onclick=\"fetch('/auto?sec=2')\">Auto 2s</button>"
+      "<button onclick=\"fetch('/auto?sec=5')\">Auto 5s</button>";
+  html +=
+    "<button onclick=\"fetch('/quit')\">Quit (q)</button></p>"
+    "<pre id=\"st\">connecting...</pre>"
+    "<script>document.addEventListener('keydown',function(e){"
+    "if(e.key=='s')fetch('/save');if(e.key=='q')fetch('/quit')});"
+    "setInterval(function(){fetch('/status').then(function(r){return r.text()})"
+    ".then(function(t){document.getElementById('st').textContent=t})"
+    ".catch(function(e){document.getElementById('st').textContent='server gone'})},1000);"
+    "</script></body></html>";
+  return html;
 }
 
 inline int query_int(const std::string & query, const std::string & key, int fallback)
@@ -174,7 +181,7 @@ inline void handle_client(
   }
 
   if (path == "/" || path == "/index.html") {
-    send_all_close(cfd, control_page(tag), "text/html; charset=utf-8");
+    send_all_close(cfd, control_page(tag, cs.show_auto), "text/html; charset=utf-8");
   } else if (path == "/status") {
     send_all_close(cfd, cs.status(), "application/json");
   } else if (path == "/save") {

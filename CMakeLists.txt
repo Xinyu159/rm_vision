@@ -52,6 +52,9 @@ target_link_libraries(solver_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools auto_ai
 add_executable(serial_test tests/serial_test.cpp)
 target_link_libraries(serial_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 
+add_executable(pnp_view tests/pnp_view.cpp)
+target_link_libraries(pnp_view ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
+
 #################### calibration ####################
 add_executable(capture calibration/capture.cpp)
 target_link_libraries(capture ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
