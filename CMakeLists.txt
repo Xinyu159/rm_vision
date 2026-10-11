@@ -51,3 +51,13 @@ target_link_libraries(solver_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools auto_ai
 
 add_executable(serial_test tests/serial_test.cpp)
 target_link_libraries(serial_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
+
+#################### calibration ####################
+add_executable(capture calibration/capture.cpp)
+target_link_libraries(capture ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
+
+add_executable(calibrate_handeye calibration/calibrate_handeye.cpp)
+target_link_libraries(calibrate_handeye ${OpenCV_LIBS} fmt::fmt yaml-cpp tools)
+
+add_executable(calibrate_robotworld_handeye calibration/calibrate_robotworld_handeye.cpp)
+target_link_libraries(calibrate_robotworld_handeye ${OpenCV_LIBS} fmt::fmt yaml-cpp tools)
