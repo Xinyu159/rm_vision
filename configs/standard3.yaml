@@ -45,6 +45,11 @@ yolo:
   # 先用与型别无关的 yaw 折算再比；Bs/Bb(编号 7/8) 由编号直接给出
   big_ratio_threshold: 3.3
 
+#####-----串口（下位机，io::Gimbal；协议见 docs/serial-protocol.md）-----#####
+com_port: "/dev/ttyACM0"   # 插拔后设备号可能变（ttyACM0/1）；可选 udev 建 /dev/gimbal 符号链接（同济做法）
+baud_rate: 115200          # USB CDC ACM 下波特率被忽略；若电控经 USB-TTL 桥接则必须一致
+first_q_timeout_s: 0       # 0 = 无限等首帧（对齐同济，上车用）；标定/测试场景给 3 避免下位机静默时挂死
+
 #####-----TODO（随模块移植逐个补齐）-----#####
 # use_roi / use_traditional（同济的传统法二次矫正，到相应阶段再补）
 # tracker / aimer / shooter 参数（对齐 sp_vision_25 configs/standard3.yaml）

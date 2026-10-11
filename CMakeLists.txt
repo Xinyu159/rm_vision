@@ -48,3 +48,6 @@ target_link_libraries(yolo_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools auto_aim)
 
 add_executable(solver_test tests/solver_test.cpp)
 target_link_libraries(solver_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools auto_aim)
+
+add_executable(serial_test tests/serial_test.cpp)
+target_link_libraries(serial_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)

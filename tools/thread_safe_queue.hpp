@@ -1,6 +1,7 @@
 #ifndef TOOLS__THREAD_SAFE_QUEUE_HPP
 #define TOOLS__THREAD_SAFE_QUEUE_HPP
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -51,6 +52,38 @@ public:
     T value{};
     pop(value);
     return value;
+  }
+
+  /// 限时阻塞取一个元素：true=已取到（写入 value）；false=超时或 close() 后取空（value 不动）
+  /// 对齐 sp_vision_25 Gimbal 首帧等待用（同济用无超时的 pop()）
+  bool pop_for(T & value, std::chrono::milliseconds timeout)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!not_empty_.wait_for(lock, timeout, [this] { return !queue_.empty() || closed_; }))
+      return false;  // 超时
+    if (queue_.empty()) return false;  // close() 且已取空
+
+    value = queue_.front();
+    queue_.pop();
+    return true;
+  }
+
+  /// 窥视队首（不弹出）：阻塞到有元素或 close()；close 且空时返回 T{}（与 pop() 同语义）
+  T front()
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    not_empty_.wait(lock, [this] { return !queue_.empty() || closed_; });
+    if (queue_.empty()) return T{};
+
+    return queue_.front();
+  }
+
+  /// 清空剩余元素（重连后丢弃陈旧数据用，对齐 sp_vision_25 Gimbal::reconnect）
+  void clear()
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    std::queue<T> empty;
+    std::swap(queue_, empty);
   }
 
   bool empty() const
