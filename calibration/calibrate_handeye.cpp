@@ -17,7 +17,7 @@
 //   ./calibrate_handeye > /tmp/handeye.yaml    # 结果留档
 //
 // 一张都识别不出：核对 calibration.yaml 的 pattern_cols/pattern_rows
-//（11×8 方格 → 内角点 10×7；若板是 11×8 内角点则改 11/8）
+//（本板实测 = 11×8 内角点，即 12×9 方格；见 calibration.yaml 注释）
 
 #include <fmt/core.h>
 #include <yaml-cpp/yaml.h>
@@ -76,17 +76,35 @@ bool read_q(const std::string & q_path, Eigen::Quaterniond & q)
   return true;
 }
 
-/// 棋盘识别：SB 变体全分辨率 + EXHAUSTIVE|ACCURACY（亚像素亚级精度、抗噪声，
-/// 实测 ~1s/张——离线可接受；经典 findChessboardCorners 实测 ~4.3s 且无板时更不稳，
-/// 故偏离同济（同济用圆点靶 + 经典版）统一改用 SB）。
+/// 棋盘识别：全分辨率 SB EXHAUSTIVE|ACCURACY 优先（角点最准，~1s/张——离线可接受；
+/// 经典 findChessboardCorners 实测 ~4.3s 且无板时更不稳，故偏离同济统一改用 SB）。
+/// 2026-10-11 暗场地实拍实测：同一张图全分辨率各变体全挂、半分辨率+CLAHE 稳定检出 →
+/// 加兜底链：全+CLAHE → 半+CLAHE(plain) → 半+CLAHE(EXH|ACC)；半分辨率角点 ×2 还原。
 bool detect_board(
   const cv::Mat & bgr, const cv::Size & pattern_size, std::vector<cv::Point2f> & corners)
 {
-  cv::Mat gray;
+  cv::Mat gray, enhanced;
   cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+  cv::createCLAHE(3.0, cv::Size(8, 8))->apply(gray, enhanced);
+
   corners.clear();
-  return cv::findChessboardCornersSB(
-    gray, pattern_size, corners, cv::CALIB_CB_EXHAUSTIVE | cv::CALIB_CB_ACCURACY);
+  if (cv::findChessboardCornersSB(
+        gray, pattern_size, corners, cv::CALIB_CB_EXHAUSTIVE | cv::CALIB_CB_ACCURACY))
+    return true;
+  if (cv::findChessboardCornersSB(
+        enhanced, pattern_size, corners, cv::CALIB_CB_EXHAUSTIVE | cv::CALIB_CB_ACCURACY))
+    return true;
+  // live 端同款（全+CLAHE+plain）：实测个别帧 EXH|ACC 全挂而这步过（如 47.jpg）
+  if (cv::findChessboardCornersSB(enhanced, pattern_size, corners)) return true;
+
+  cv::Mat half;
+  cv::resize(enhanced, half, {}, 0.5, 0.5, cv::INTER_AREA);
+  bool ok = cv::findChessboardCornersSB(half, pattern_size, corners) ||
+            cv::findChessboardCornersSB(
+              half, pattern_size, corners, cv::CALIB_CB_EXHAUSTIVE | cv::CALIB_CB_ACCURACY);
+  if (ok)
+    for (auto & c : corners) c *= 2.f;
+  return ok;
 }
 
 struct Loaded
@@ -234,9 +252,14 @@ int main(int argc, char ** argv)
   }
 
   if (data.used == 0) {
-    tools::logger()->error(
-      "[calibrate_handeye] 一张都没识别出棋盘——核对 calibration.yaml 的 pattern_cols/pattern_rows"
-      "（11x8 方格 → 内角点 10x7）与板面清晰度；上次采图目录对不对？");
+    if (data.total == 0)
+      tools::logger()->error(
+        "[calibrate_handeye] 输入目录没有 1.jpg/1.txt 起的成对数据——编号必须从 1 连续"
+        "（capture 从最大编号续采；中间删过图请重新连号）");
+    else
+      tools::logger()->error(
+        "[calibrate_handeye] 一张都没识别出棋盘——核对 calibration.yaml 的 pattern_cols/pattern_rows"
+        "与板面清晰度（暗场地先开灯/靠近板）");
     return 1;
   }
   if (data.used < 3) {

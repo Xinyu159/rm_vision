@@ -70,16 +70,18 @@ bool flag_on(const cv::CommandLineParser & cli, const std::string & name)
   return v == "true" || v == "1" || v == "yes";
 }
 
-/// 棋盘识别（SB 变体）。注意：经典 findChessboardCorners 在无板时实测 4.3s/张
-///（自适应阈值），曾把主循环拖到 0.2fps；SB 半分辨率只要 ~130ms，故全程改用 SB。
-/// 离线标定程序用 SB 全分辨率 + EXHAUSTIVE|ACCURACY（更稳更准）——比这里的现场提示只强不弱。
+/// 棋盘识别（SB 变体 + CLAHE 对比度增强）。经典 findChessboardCorners 在无板时实测
+/// 4.3s/张（自适应阈值），曾把主循环拖到 0.2fps；SB 半分辨率只要 ~130ms，故全程改用 SB。
+/// CLAHE 依据（2026-10-11 暗场地实拍）：半分辨率 plain SB 两张测试图全挂、加 CLAHE 后全过；
+/// 离线两程序同样带 CLAHE 兜底链（全分辨率优先、暗图退化半分辨率）。
 bool detect_board_sb(
   const cv::Mat & bgr, const cv::Size & pattern_size, std::vector<cv::Point2f> & corners)
 {
-  cv::Mat gray;
+  cv::Mat gray, enhanced;
   cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+  cv::createCLAHE(3.0, cv::Size(8, 8))->apply(gray, enhanced);
   corners.clear();
-  return cv::findChessboardCornersSB(gray, pattern_size, corners);
+  return cv::findChessboardCornersSB(enhanced, pattern_size, corners);
 }
 
 /// 棋盘检测工作线程：主循环只"放入半分辨率副本 + 取最近结果"，检测绝不阻塞采集/存图/推流。
@@ -234,8 +236,8 @@ int main(int argc, char ** argv)
   cv::Size pattern_size(
     tools::read<int>(yaml, "pattern_cols"), tools::read<int>(yaml, "pattern_rows"));
   tools::logger()->info(
-    "[capture] 棋盘内角点 {}x{}（11x8 方格 → 10x7；全 failure 先怀疑这里）", pattern_size.width,
-    pattern_size.height);
+    "[capture] 棋盘内角点 {}x{}（pattern_cols/pattern_rows；全 failure 先怀疑这里）",
+    pattern_size.width, pattern_size.height);
 
   // 输出目录：递归建；已有图则从最大编号续采（不覆盖已有文件）
   if (!tools::mkdirs(output_folder)) {
@@ -358,7 +360,9 @@ int main(int argc, char ** argv)
       if (scale != 1.0)
         cv::resize(img, disp, {}, scale, scale, cv::INTER_AREA);
       else
-        disp = img;
+        disp = img.clone();  // 必须 clone：disp 会画角点圈+叠加文字，别名会把这层污染
+                             // 直接带进随后 imwrite 的 img 原图（2026-10-11 实测：圈线
+                             // 让离线检测挂掉、live 却正常，浪费了 1/4 采集帧）
       if (board_fresh) {  // 过期的角点不画（会落在错位置）
         if (scale != 1.0) {
           std::vector<cv::Point2f> corners_scaled;

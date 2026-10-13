@@ -55,6 +55,9 @@ target_link_libraries(serial_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 add_executable(pnp_view tests/pnp_view.cpp)
 target_link_libraries(pnp_view ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 
+add_executable(gimbal_follow tests/gimbal_follow.cpp)
+target_link_libraries(gimbal_follow ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
+
 #################### calibration ####################
 add_executable(capture calibration/capture.cpp)
 target_link_libraries(capture ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
@@ -64,3 +67,6 @@ target_link_libraries(calibrate_handeye ${OpenCV_LIBS} fmt::fmt yaml-cpp tools)
 
 add_executable(calibrate_robotworld_handeye calibration/calibrate_robotworld_handeye.cpp)
 target_link_libraries(calibrate_robotworld_handeye ${OpenCV_LIBS} fmt::fmt yaml-cpp tools)
+
+add_executable(calibrate_camera calibration/calibrate_camera.cpp)
+target_link_libraries(calibrate_camera ${OpenCV_LIBS} fmt::fmt yaml-cpp tools)

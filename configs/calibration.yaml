@@ -1,5 +1,5 @@
-# 标定采集与手眼标定专用配置（capture / calibrate_handeye / calibrate_robotworld_handeye）
-# 相机块与 standard3.yaml 保持同步；内参来自 2026-08-15 棋盘标定（calibration/mer1_camera_params.yaml）
+# 标定采集与手眼标定专用配置（capture / calibrate_camera / calibrate_handeye / calibrate_robotworld_handeye）
+# 相机块与 standard3.yaml 保持同步；内参来自 2026-10-11 手眼同批实拍标定（calibrate_camera，96 张取 75）
 
 #####-----相机（大恒 Galaxy MER-139-210U3C）-----#####
 camera_name: "galaxy"
@@ -18,17 +18,20 @@ galaxy:
   pixel_format: "BayerRG8"  # 满帧率必须 8bit
   balance_white_auto: "Once"
 
-#####-----棋盘格（打印板 11×8 方格、格距 30mm）-----#####
-# pattern_* 是"内角点"数：11×8 个方格 → 10×7 个内角点（OpenCV patternSize 的语义）。
-# 若你手上的板其实是 11×8 个内角点（即 12×9 个方格），这里改成 11 / 8。
+#####-----棋盘格（打印板：12×9 方格、格距 30mm）-----#####
+# pattern_* 是"内角点"数（OpenCV patternSize 语义）。实测实证（2026-10-11 暗场地实拍）：
+# 本板为 11×8 个内角点（= 12×9 个方格）——曾按"11×8 方格 → 10×7 内角点"配置，
+# 结果 SB 全尺寸全失败；改 11/8 后稳定检出（12×9、13×10 等更大尺寸均拒识，排除歧义）。
 # 自证方法：capture 画面叠加显示 board OK 即语义正确；全 failure 先怀疑这里。
-pattern_cols: 10
-pattern_rows: 7
+pattern_cols: 11
+pattern_rows: 8
 center_distance_mm: 30
 
-#####-----相机内参（2026-08-15 标定，rms 0.098px）-----#####
-camera_matrix: [1292.4613, 0, 651.550, 0, 1292.1487, 485.413, 0, 0, 1]
-distort_coeffs: [-0.0791303, 0.1741172, -0.0006693, 0.0000524, -0.1184516]
+#####-----相机内参（2026-10-11 实拍标定，96 张识别 75，mean 0.108 / rms 0.123px）-----#####
+# 旧值留档（2026-08-15，rms 0.098px）：fx 1292.4613 fy 1292.1487 cx 651.550 cy 485.413
+# 前值留档（2026-10-11 首轮 45 张识别 35，rms 0.129px）：fx 1281.2886 fy 1281.3023 cx 647.7272 cy 508.8639
+camera_matrix: [1282.53324435994, 0, 647.4986327469708, 0, 1282.229787675208, 511.5407319264762, 0, 0, 1]
+distort_coeffs: [-0.07386963879816996, 0.09753513916562999, 0.0001865833496305231, 0.0003022888766735818, 0.09264600795890895]
 
 #####-----手眼-----#####
 R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]   # 云台→IMU 体轴；IMU 接入前单位阵

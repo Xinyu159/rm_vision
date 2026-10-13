@@ -6,7 +6,8 @@
 // 对照同济 tasks/auto_aim/yolo.hpp + yolos/yolov5.cpp：
 //   - 预处理 / 输出解析逐行对齐（映射表见 docs/0526-model-verification.md §3）
 //   - 后端由 OpenVINO IR 换为 TensorRT FP16（engine 由 trtexec 构建，见该文档 §4）
-//   - 未含 ROI 裁剪与 use_traditional 传统法二次矫正（到相应阶段再补）
+//   - 已含动态 ROI（detect(img, roi)，对齐同济 offset_ 回填模式）；
+//     未含 use_traditional 传统法二次矫正（到相应阶段再补）
 //
 // 已知 engine 绑定（models/0526_fp16.engine）：images fp16 [1,3,640,640] → output fp32 [1,25200,22]
 
@@ -46,6 +47,14 @@ public:
   /// img 可传单通道 Bayer（相机原始帧，内部走 COLOR_BayerBG2BGR）或三通道 BGR；
   /// 返回装甲板列表（已做置信度过滤 + NMS）。非线程安全（内部复用缓存）。
   std::list<Armor> detect(const cv::Mat & img);
+
+  /// 带 ROI 的检测：只检测 img 的 roi 子区（空/无效 rect == 全图，走上面的等价路径）。
+  /// 对齐同济 yolos/{yolov5,yolov8,yolo11}.cpp 的 offset_ 模式：先裁 ROI 再变换到网络
+  /// 输入，解码后把关键点/框/中心加回 roi.tl()——返回坐标一律是"整图系"，与全图检测
+  /// 语义完全一致（solver/选目标/绘制零改动）。单通道 Bayer 帧会先把 ROI 原点对齐到
+  /// 偶坐标（Bayer 2x2 相位），且只转换 ROI 那一块。用途：云台跟随按上一帧目标框扩边
+  /// 急裁（见 gimbal_follow）——预处理开销随 ROI 面积缩小，网络输入里目标占比更大。
+  std::list<Armor> detect(const cv::Mat & img, const cv::Rect & roi);
 
   /// 最近一次 detect 的耗时分解（毫秒）
   struct Timings

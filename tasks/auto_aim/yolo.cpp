@@ -217,11 +217,26 @@ YOLO::YOLO(const YoloConfig & config) : config_(config), impl_(new Impl)
 
 YOLO::~YOLO() = default;
 
-std::list<Armor> YOLO::detect(const cv::Mat & img)
+std::list<Armor> YOLO::detect(const cv::Mat & img) { return detect(img, cv::Rect()); }
+
+std::list<Armor> YOLO::detect(const cv::Mat & img, const cv::Rect & roi)
 {
   using clock = std::chrono::steady_clock;
   std::list<Armor> armors;
   if (img.empty()) return armors;
+
+  // ---- 动态 ROI（对齐同济 yolos/{yolov5,yolov8,yolo11}.cpp 的 offset_ 模式）----
+  // 裁 ROI → 网络 → 解码后关键点/框/中心加回 roi.tl()：返回一律"整图系"坐标，
+  // 调用方（solver/选目标/绘制）零改动。单通道 Bayer 对 ROI 原点做偶对齐
+  // （Bayer 2x2 相位），且只转换 ROI 一块——预处理开销随 ROI 面积缩小。
+  cv::Rect r = roi & cv::Rect(0, 0, img.cols, img.rows);
+  const bool use_roi =
+    !roi.empty() && r.width > 0 && r.height > 0 && r != cv::Rect(0, 0, img.cols, img.rows);
+  if (use_roi && img.channels() == 1) {
+    r.x &= ~1;
+    r.y &= ~1;
+  }
+  const cv::Point2f roi_off(use_roi ? (float)r.x : 0.f, use_roi ? (float)r.y : 0.f);
 
   // ---- 预处理（对齐 tools/verify_0526.py：等比缩放到装得下、左上对齐、黑边补齐）----
   // 2026-10-09 提速（离线分环节实测，见台账 §6/B4；①②③输出与旧实现逐位一致，已校验）：
@@ -230,13 +245,14 @@ std::list<Armor> YOLO::detect(const cv::Mat & img)
   //   ③ 尾段融合：split + 按平面 convertTo(1/255, 输入类型) 直写主机缓冲，
   //      免 fp32 NCHW 中转（原 blobFromImage+convertTo 约 2.8ms → 约 0.8ms）
   //   ④ H2D 走 pinned + 异步（约 0.54 → 0.19ms；与推理同流，天然先拷后推）
+  //   ⑤ 动态 ROI：先裁再转/缩（letterbox 仍左上对齐）——除 /scale_ 外再加 roi_off 还原
   auto t0 = clock::now();
   cv::Mat src;
   if (img.channels() == 1) {
-    cv::cvtColor(img, impl_->bayer_bgr, cv::COLOR_BayerBG2BGR);
+    cv::cvtColor(use_roi ? img(r) : img, impl_->bayer_bgr, cv::COLOR_BayerBG2BGR);
     src = impl_->bayer_bgr;
   } else if (img.channels() == 3) {
-    src = img;
+    src = use_roi ? img(r) : img;
   } else {
     throw std::runtime_error("detect: 只支持单通道 Bayer 或三通道 BGR");
   }
@@ -320,10 +336,10 @@ std::list<Armor> YOLO::detect(const cv::Mat & img)
     c.num_id = argmax(row + 13, 9);
     // 关键点重排（同济/深大同款）：(0,1)(6,7)(4,5)(2,3) → 左上,右上,右下,左下
     c.points = {
-      {row[0] / (float)scale_, row[1] / (float)scale_},
-      {row[6] / (float)scale_, row[7] / (float)scale_},
-      {row[4] / (float)scale_, row[5] / (float)scale_},
-      {row[2] / (float)scale_, row[3] / (float)scale_}};
+      {row[0] / (float)scale_ + roi_off.x, row[1] / (float)scale_ + roi_off.y},
+      {row[6] / (float)scale_ + roi_off.x, row[7] / (float)scale_ + roi_off.y},
+      {row[4] / (float)scale_ + roi_off.x, row[5] / (float)scale_ + roi_off.y},
+      {row[2] / (float)scale_ + roi_off.x, row[3] / (float)scale_ + roi_off.y}};
     boxes.push_back(cv::boundingRect(c.points));
     scores.push_back(conf);
     cands.push_back(std::move(c));
